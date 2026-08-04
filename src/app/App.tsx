@@ -42,7 +42,7 @@ export function App() {
   const ownFarmPath = state.session ? `/u/${state.session.userId}/farm` : '/login'
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login" element={state.session ? <Navigate to={ownFarmPath} replace /> : <LoginPage />} />
       <Route path="/invite" element={<InvitePage />} />
       <Route path="/farm" element={<Navigate to={ownFarmPath} replace />} />
       <Route path="/u/:userId/farm" element={state.session ? <OwnFarmRoute /> : <Navigate to="/login" replace />} />

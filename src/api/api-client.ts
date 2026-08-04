@@ -129,7 +129,6 @@ export class ApiClient {
       farmId: String(res.farm_id),
     }
     this.session = session
-    this.onSession(session)
     return session
   }
 

@@ -76,6 +76,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const saveSession = useCallback((session: AppState['session']) => {
     if (session) sessionStorage.setItem(SESSION_KEY, JSON.stringify(session))
     else sessionStorage.removeItem(SESSION_KEY)
+    stateRef.current = { ...stateRef.current, session }
     dispatch({ type: 'session', session })
   }, [])
 
@@ -251,9 +252,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const session = await api.guestLogin(deviceId(name), name)
       localStorage.setItem(PROFILE_NAME_KEY, name)
       const namedSession = { ...session, displayName: name }
+      api.setSession(namedSession)
       saveSession(namedSession)
-      await Promise.all([loadSnapshot(), refreshPlayerAssets()])
-      socket.connect(session.accessToken)
+      await Promise.all([loadSnapshot(namedSession.farmId), refreshPlayerAssets()])
+      socket.connect(namedSession.accessToken)
       return namedSession
     } catch (error) {
       const apiError = error as ApiError
@@ -339,9 +341,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (!state.session) return
     let cancelled = false
-    void Promise.all([loadSnapshot(), refreshPlayerAssets()]).then(() => { if (!cancelled) socket.connect(state.session!.accessToken) }).catch(() => undefined)
+    const restore = async () => {
+      const profileName = localStorage.getItem(PROFILE_NAME_KEY)?.trim()
+      let session = stateRef.current.session
+
+      // The numeric user/farm IDs in sessionStorage may outlive a local database
+      // reset. Re-authenticate the stable device identity before trusting them.
+      if (profileName) {
+        const verified = await api.guestLogin(deviceId(profileName), profileName)
+        session = { ...verified, displayName: profileName }
+        api.setSession(session)
+        saveSession(session)
+      } else if (session) {
+        api.setSession(session)
+      }
+
+      if (!session || cancelled) return
+      await Promise.all([loadSnapshot(session.farmId), refreshPlayerAssets()])
+      if (!cancelled && stateRef.current.session?.userId === session.userId) {
+        socket.connect(session.accessToken)
+      }
+    }
+    void restore().catch(() => undefined)
     return () => { cancelled = true; socket.disconnect() }
   }, []) // restore once on first mount
 
