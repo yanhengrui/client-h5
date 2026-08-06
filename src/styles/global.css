@@ -45,11 +45,17 @@ button:disabled { opacity: .52; cursor: not-allowed; }
 .connection i { display: inline-block; width: 8px; height: 8px; background: #999; border-radius: 50%; margin-right: 4px; }
 .connection.open i { background: #49a64f; box-shadow: 0 0 0 3px #49a64f2d; }
 .connection.connecting i, .connection.backoff i { background: #e9a23b; }
+.connection.full { color: #805c18; border-color: #d49a2c; background: #fff2c9; }
+.connection.full i { background: #e9a23b; box-shadow: 0 0 0 3px #e9a23b2d; }
 .topbar nav { display: flex; gap: 4px; }
 .topbar nav button { border: 0; background: transparent; padding: 8px 10px; border-radius: 9px; cursor: pointer; font-weight: 700; }
 .topbar nav button:hover { background: #f1eadb; }
 .hero-strip { max-width: 1320px; margin: 0 auto; padding: 28px clamp(18px, 4vw, 42px) 18px; display: flex; align-items: end; justify-content: space-between; }
 .hero-strip h1 { margin: 0; font-family: 'Ma Shan Zheng', cursive; font-weight: 400; font-size: clamp(30px, 4vw, 44px); }
+.viewer-limit-banner { max-width: 1236px; margin: 0 auto 18px; padding: 16px 20px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; border: 2px solid #c58a28; border-radius: 18px; background: #fff4cf; box-shadow: 4px 5px 0 #8e672e2b; color: #654815; }
+.viewer-limit-banner strong { display: block; margin-bottom: 3px; font-size: 17px; }
+.viewer-limit-banner p { margin: 0; color: #80683f; }
+.viewer-limit-icon { font-size: 30px; }
 .farm-layout { max-width: 1320px; margin: 0 auto; padding: 0 clamp(14px, 3vw, 42px); display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; }
 .field-card, .selection-card, .dock, .modal { background: var(--paper); border: 2px solid var(--line); box-shadow: 6px 7px 0 #60835735; }
 .field-card { position: relative; min-height: 540px; padding: clamp(40px, 6vw, 72px); overflow: hidden; border-radius: 30px 24px 28px 24px; background: linear-gradient(#98cd74, #79b65e); }
@@ -191,6 +197,8 @@ progress { height: 8px; accent-color: var(--green); }
   .sun { right: 7%; top: 4%; }
   .hero-strip { align-items: flex-start; gap: 12px; }
   .hero-strip h1 { font-size: 30px; }
+  .viewer-limit-banner { margin-inline: 14px; grid-template-columns: auto 1fr; }
+  .viewer-limit-banner button { grid-column: 1 / -1; width: 100%; }
   .field-card { padding: 44px 12px 64px; min-height: 510px; }
   .plot-grid { gap: 12px 8px; }
   .plot { min-height: 90px; }

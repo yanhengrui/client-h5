@@ -94,7 +94,7 @@ export type Task = {
   updated_at: string
 }
 
-export type ApiErrorBody = { code?: string; message?: string }
+export type ApiErrorBody = { code?: string; message?: string; reason?: string; retry_after_ms?: number }
 
 const asID = (value: unknown): string => String(value ?? '')
 export function normalizeSnapshot(raw: FarmSnapshot): FarmSnapshot {

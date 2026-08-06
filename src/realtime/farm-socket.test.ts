@@ -14,11 +14,13 @@ describe('createCommandId', () => {
 
 describe('createSubscribeFarmFrame', () => {
   it('creates a dedicated control frame from the authoritative snapshot version', () => {
-    expect(createSubscribeFarmFrame('23493', '17')).toEqual({
+    expect(createSubscribeFarmFrame('23493', '17', 8, '019abcdef')).toEqual({
       meta: {
         type: 'SUBSCRIBE_FARM',
         farm_id: '23493',
         protocol_version: '1',
+        client_seq: 8,
+        cmd_id: '019abcdef',
       },
       body: { snapshot_version: '17' },
     })

@@ -18,6 +18,7 @@ type AppContextValue = {
   logout: () => void
   loadSnapshot: (farmId?: string) => Promise<FarmSnapshot>
   refreshPlayerAssets: () => Promise<void>
+  retryFarmSubscription: () => Promise<void>
   farmCommand: (method: string, plotId: number, body?: Record<string, unknown>) => void
   shopTrade: (kind: 'buy' | 'sell', quantity: number) => Promise<void>
   hasPet: boolean | null
@@ -71,6 +72,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const acceptEventsRef = useRef(false)
   const ackTimers = useRef<Record<string, number>>({})
   const pendingMethodsRef = useRef<Record<string, string>>({})
+  const pendingSubscriptionsRef = useRef<Record<string, { farmId: string; version: string }>>({})
+  const socketOpenedRef = useRef(false)
   const assetRefreshTimerRef = useRef<number | null>(null)
 
   const saveSession = useCallback((session: AppState['session']) => {
@@ -121,6 +124,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const handleAck = useCallback((frame: AckFrame) => {
+    const subscription = frame.meta.cmd_id ? pendingSubscriptionsRef.current[frame.meta.cmd_id] : undefined
+    if (subscription) {
+      delete pendingSubscriptionsRef.current[frame.meta.cmd_id!]
+      dispatch({ type: 'serverSeq', serverSeq: frame.meta.server_seq })
+      const current = activeFarmRef.current
+      if (!current || current.farmId !== subscription.farmId || desiredFarmIdRef.current !== subscription.farmId) return
+      if (frame.body.result === 'OK') {
+        acceptEventsRef.current = true
+        dispatch({ type: 'farmSubscription', subscription: { farmId: subscription.farmId, phase: 'live' } })
+      } else if (frame.body.result === 'COMMON_RESOURCE_EXHAUSTED') {
+        acceptEventsRef.current = false
+        dispatch({ type: 'farmSubscription', subscription: { farmId: subscription.farmId, phase: 'full' } })
+      } else {
+        acceptEventsRef.current = false
+        dispatch({ type: 'farmSubscription', subscription: { farmId: subscription.farmId, phase: 'failed' } })
+        notify(errorMessage(frame.body.result), 'error')
+      }
+      return
+    }
+
     if (!frame.meta.cmd_id) {
       dispatch({ type: 'serverSeq', serverSeq: frame.meta.server_seq })
       if (frame.body.result !== 'OK') {
@@ -216,6 +239,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     onOpen: () => syncOnOpenRef.current(),
   }), [handleAck, handleEvent])
 
+  const subscribeFarm = useCallback((farmId: string, version: string) => {
+    acceptEventsRef.current = false
+    dispatch({ type: 'farmSubscription', subscription: { farmId, phase: 'subscribing' } })
+    try {
+      const cmdId = socket.subscribeFarm(farmId, version)
+      pendingSubscriptionsRef.current[cmdId] = { farmId, version }
+    } catch {
+      dispatch({ type: 'farmSubscription', subscription: { farmId, phase: 'failed' } })
+    }
+  }, [socket])
+
   const loadSnapshot = useCallback(async (farmId?: string) => {
     const requestedFarmId = farmId ?? stateRef.current.session?.farmId
     desiredFarmIdRef.current = requestedFarmId
@@ -227,10 +261,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (requestId !== snapshotRequestRef.current) return snapshot
       dispatch({ type: 'snapshot', snapshot })
       activeFarmRef.current = { farmId: snapshot.farm_id, version: snapshot.version }
-      if (socket.isOpen) {
-        socket.subscribeFarm(snapshot.farm_id, snapshot.version)
-        acceptEventsRef.current = true
-      }
+      if (socket.isOpen) subscribeFarm(snapshot.farm_id, snapshot.version)
+      else dispatch({ type: 'farmSubscription', subscription: { farmId: snapshot.farm_id, phase: 'idle' } })
       return snapshot
     } catch (error) {
       dispatch({ type: 'sync', sync: 'stale' })
@@ -238,13 +270,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
       notify(errorMessage(apiError.code, apiError.message), 'error')
       throw error
     }
-  }, [api, notify])
+  }, [api, notify, socket, subscribeFarm])
   refreshSnapshotRef.current = () => {
     if (resyncingRef.current) return
     resyncingRef.current = true
     void loadSnapshot(activeFarmRef.current?.farmId ?? desiredFarmIdRef.current).finally(() => { resyncingRef.current = false })
   }
-  syncOnOpenRef.current = () => { void loadSnapshot(desiredFarmIdRef.current) }
+  syncOnOpenRef.current = () => {
+    const current = activeFarmRef.current
+    const desired = desiredFarmIdRef.current
+    if (!socketOpenedRef.current && current && (!desired || current.farmId === desired)) {
+      socketOpenedRef.current = true
+      subscribeFarm(current.farmId, current.version)
+      return
+    }
+    socketOpenedRef.current = true
+    void loadSnapshot(desired)
+  }
+
+  const retryFarmSubscription = useCallback(async () => {
+    const farmId = desiredFarmIdRef.current ?? activeFarmRef.current?.farmId
+    if (!farmId) return
+    if (!socket.isOpen) {
+      socket.reconnect()
+      return
+    }
+    await loadSnapshot(farmId)
+  }, [loadSnapshot, socket])
 
   const login = useCallback(async (displayName?: string) => {
     try {
@@ -266,6 +318,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     socket.disconnect()
+    socketOpenedRef.current = false
+    pendingSubscriptionsRef.current = {}
+    acceptEventsRef.current = false
+    dispatch({ type: 'farmSubscription', subscription: { farmId: null, phase: 'idle' } })
     if (assetRefreshTimerRef.current !== null) window.clearTimeout(assetRefreshTimerRef.current)
     assetRefreshTimerRef.current = null
     setHasPet(null)
@@ -278,6 +334,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const farmCommand = useCallback((method: string, plotId: number, body: Record<string, unknown> = {}) => {
     const farm = stateRef.current.farm
     if (!farm || stateRef.current.socketPhase !== 'open') return notify('实时连接尚未就绪', 'error')
+    if (stateRef.current.farmSubscription.phase !== 'live' || stateRef.current.farmSubscription.farmId !== farm.farm_id) {
+      return notify('当前农场仅可查看，暂时不能操作', 'info')
+    }
     if (Object.values(stateRef.current.pending).includes(plotId)) return
     if (!hasCommandInventory(method, stateRef.current.playerEconomy?.inventory ?? [])) {
       notify('种子不足，请先去种子商店购买', 'info')
@@ -434,7 +493,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         activeFarmRef.current = { farmId: snapshot.farm_id, version: snapshot.version }
         dispatch({ type: 'snapshot', snapshot })
-        if (socket.isOpen) socket.subscribeFarm(snapshot.farm_id, snapshot.version)
+        if (socket.isOpen) subscribeFarm(snapshot.farm_id, snapshot.version)
       } catch {
         // Realtime remains the primary path. A failed quiet check must not add a
         // loading state or toast; the next interval retries after services recover.
@@ -446,9 +505,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const timer = window.setInterval(() => { void reconcile() }, 1500)
     return () => window.clearInterval(timer)
-  }, [api, autoHarvestEnabled, hasPet, schedulePlayerAssetsRefresh, socket, state.session?.farmId])
+  }, [api, autoHarvestEnabled, hasPet, schedulePlayerAssetsRefresh, socket, state.session?.farmId, subscribeFarm])
 
-  return <AppContext.Provider value={{ state, api, login, logout, loadSnapshot, refreshPlayerAssets, farmCommand, shopTrade, hasPet, autoHarvestEnabled, refreshPetStatus, setPetAutoHarvest, petHarvests, completePetHarvest, notify, reconnectSocket: () => socket.reconnect(), disconnectSocket: () => socket.disconnect(), exportDebug }}>{children}</AppContext.Provider>
+  return <AppContext.Provider value={{ state, api, login, logout, loadSnapshot, retryFarmSubscription, refreshPlayerAssets, farmCommand, shopTrade, hasPet, autoHarvestEnabled, refreshPetStatus, setPetAutoHarvest, petHarvests, completePetHarvest, notify, reconnectSocket: () => socket.reconnect(), disconnectSocket: () => socket.disconnect(), exportDebug }}>{children}</AppContext.Provider>
 }
 
 export function optimisticPlotPatch(method: string, plotId: number, body: Record<string, unknown>, nowMs = Date.now()): PlotPatch | undefined {

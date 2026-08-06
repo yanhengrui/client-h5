@@ -131,7 +131,7 @@ function InvitePage() {
 
 function FarmPage() {
   const { farmId } = useParams()
-  const { state, loadSnapshot, farmCommand, logout, hasPet, petHarvests, completePetHarvest, notify } = useApp()
+  const { state, loadSnapshot, retryFarmSubscription, farmCommand, logout, hasPet, petHarvests, completePetHarvest, notify } = useApp()
   const navigate = useNavigate()
   const location = useLocation()
   const fieldRef = useRef<HTMLElement>(null)
@@ -166,7 +166,9 @@ function FarmPage() {
   const selectedPlot = displayPlots.find((plot) => plot.plot_id === selected) ?? displayPlots[0]
   const selectedOrdinal = Math.max(1, displayPlots.findIndex((plot) => plot.plot_id === selectedPlot?.plot_id) + 1)
   const busy = Object.values(state.pending).includes(selectedPlot?.plot_id ?? -1)
-  const connected = state.socketPhase === 'open' && farm.sync === 'synced'
+  const subscriptionPhase = state.farmSubscription.farmId === farm.farm_id ? state.farmSubscription.phase : 'idle'
+  const viewerFull = isFriend && subscriptionPhase === 'full'
+  const connected = state.socketPhase === 'open' && farm.sync === 'synced' && subscriptionPhase === 'live'
   const action = actionFor(selectedPlot, isFriend)
   const currentYield = plotYield(selectedPlot)
   const playerEconomy = state.playerEconomy
@@ -191,7 +193,7 @@ function FarmPage() {
         <button className="logo-button" onClick={() => navigate(`/u/${state.session?.userId}/farm`)}><span>🌾</span><strong>麦穗农场</strong></button>
         <div className="status-cluster">
           <span className="coin-pill">🪙 <b>{playerEconomy?.coin_balance ?? '—'}</b></span>
-          <span className={`connection ${state.socketPhase}`}><i /> {phaseLabel(state.socketPhase)}</span>
+          <span className={`connection ${viewerFull ? 'full' : state.socketPhase}`}><i /> {viewerFull ? '只读快照' : subscriptionPhase === 'subscribing' ? '正在加入' : phaseLabel(state.socketPhase)}</span>
           <span className="version">版本 {farm.version}</span>
           <span className="version">农场主 {farm.owner_display_name?.trim() || state.session?.displayName?.trim() || `#${state.session?.userId}`}</span>
         </div>
@@ -208,6 +210,15 @@ function FarmPage() {
         <div><p className="eyebrow">{isFriend ? 'VISITING FARM' : 'MY LITTLE FARM'}</p><h1>{isFriend ? `${farmDisplayName}的农场` : `${farmDisplayName || '农场主'}，今天也要好好种田`}</h1></div>
         {isFriend && <button className="secondary" onClick={() => navigate(`/u/${state.session?.userId}/farm`)}>← 回我的农场</button>}
       </section>
+
+      {viewerFull && <section className="viewer-limit-banner" role="status">
+        <div className="viewer-limit-icon" aria-hidden="true">🌾</div>
+        <div>
+          <strong>农场里有点挤</strong>
+          <p>当前参观人数已满。你看到的是刚刚获取的农场快照，暂时不会自动更新。</p>
+        </div>
+        <button className="secondary" onClick={() => void retryFarmSubscription()}>看看有没有空位</button>
+      </section>}
 
       <div className="farm-layout">
         <section className="field-card" ref={fieldRef}>
@@ -363,7 +374,7 @@ function ShopPanel() {
   const balance = state.playerEconomy?.coin_balance ?? 0
   const cropCount = inventoryCount(state.playerEconomy?.inventory ?? [], 'CROP')
   const quantity = mode === 'buy' ? buyQuantity : sellQuantity
-  const normalizedQuantity = Math.max(1, Math.min(999, Math.floor(quantity || 1)))
+  const normalizedQuantity = Math.max(1, Math.min(10_000, Math.floor(quantity || 1)))
   const changeQuantity = (next: number) => {
     const normalized = Math.max(1, Math.min(999, Math.floor(next || 1)))
     if (mode === 'buy') setBuyQuantity(normalized)
@@ -385,7 +396,7 @@ function ShopPanel() {
     }
   }
   const buyingMode = mode === 'buy'
-  return <><PanelTitle icon="🛒" title="种子小铺" subtitle="购买和出售分别记录数量，结算以服务端为准" /><div className="tabs shop-tabs" role="tablist"><button className={buyingMode ? 'active' : ''} role="tab" aria-selected={buyingMode} onClick={() => setMode('buy')}>购买种子</button><button className={!buyingMode ? 'active' : ''} role="tab" aria-selected={!buyingMode} onClick={() => setMode('sell')}>出售作物</button></div><div className="product"><div className="product-art">🌾</div><div><h3>{buyingMode ? '购买阳光小麦种子' : '出售仓库小麦'}</h3><p>{buyingMode ? '每袋种子可以播种一块空地' : `仓库当前共有 ${cropCount} 份小麦`}</p><div className="price">{buyingMode ? '🪙 10 / 袋' : '🪙 20 / 份'}</div></div></div><div className="quantity-picker"><span>{buyingMode ? '购买数量' : '出售数量'}</span><div><button type="button" aria-label="减少数量" disabled={normalizedQuantity <= 1} onClick={() => changeQuantity(normalizedQuantity - 1)}>−</button><input aria-label={buyingMode ? '购买数量' : '出售数量'} type="number" min="1" max="999" step="1" value={normalizedQuantity} onChange={(event) => changeQuantity(Number(event.target.value))} /><button type="button" aria-label="增加数量" disabled={normalizedQuantity >= 999} onClick={() => changeQuantity(normalizedQuantity + 1)}>＋</button></div><small>{buyingMode ? `余额最多可买 ${Math.floor(balance / 10)} 袋` : `仓库最多可卖 ${cropCount} 份`}</small></div><div className="button-row"><button className={buyingMode ? 'primary shop-action' : 'secondary shop-action'} disabled={buyingMode ? balance < normalizedQuantity * 10 : cropCount < normalizedQuantity} aria-busy={trading} onClick={() => act(mode)}>{buyingMode ? `购买 ${normalizedQuantity} 袋 · ${normalizedQuantity * 10} 金币` : `出售 ${normalizedQuantity} 份 · 获得 ${normalizedQuantity * 20} 金币`}</button></div></>
+  return <><PanelTitle icon="🛒" title="种子小铺" subtitle="购买和出售分别记录数量，结算以服务端为准" /><div className="tabs shop-tabs" role="tablist"><button className={buyingMode ? 'active' : ''} role="tab" aria-selected={buyingMode} onClick={() => setMode('buy')}>购买种子</button><button className={!buyingMode ? 'active' : ''} role="tab" aria-selected={!buyingMode} onClick={() => setMode('sell')}>出售作物</button></div><div className="product"><div className="product-art">🌾</div><div><h3>{buyingMode ? '购买阳光小麦种子' : '出售仓库小麦'}</h3><p>{buyingMode ? '每袋种子可以播种一块空地' : `仓库当前共有 ${cropCount} 份小麦`}</p><div className="price">{buyingMode ? '🪙 10 / 袋' : '🪙 20 / 份'}</div></div></div><div className="quantity-picker"><span>{buyingMode ? '购买数量' : '出售数量'}</span><div><button type="button" aria-label="减少数量" disabled={normalizedQuantity <= 1} onClick={() => changeQuantity(normalizedQuantity - 1)}>−</button><input aria-label={buyingMode ? '购买数量' : '出售数量'} type="number" min="1" max="10000" step="1" value={normalizedQuantity} onChange={(event) => changeQuantity(Number(event.target.value))} /><button type="button" aria-label="增加数量" disabled={normalizedQuantity >= 10_000} onClick={() => changeQuantity(normalizedQuantity + 1)}>＋</button></div><small>{buyingMode ? `余额最多可买 ${Math.floor(balance / 10)} 袋` : `仓库最多可卖 ${cropCount} 份`}</small></div><div className="button-row"><button className={buyingMode ? 'primary shop-action' : 'secondary shop-action'} disabled={buyingMode ? balance < normalizedQuantity * 10 : cropCount < normalizedQuantity} aria-busy={trading} onClick={() => act(mode)}>{buyingMode ? `购买 ${normalizedQuantity} 袋 · ${normalizedQuantity * 10} 金币` : `出售 ${normalizedQuantity} 份 · 获得 ${normalizedQuantity * 20} 金币`}</button></div></>
 }
 
 function CatalogPanel() {

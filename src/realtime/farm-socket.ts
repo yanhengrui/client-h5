@@ -116,11 +116,14 @@ export class FarmSocket {
     return cmdId
   }
 
-  subscribeFarm(farmId: string, snapshotVersion: string) {
+  subscribeFarm(farmId: string, snapshotVersion: string): string {
     if (this.socket?.readyState !== WebSocket.OPEN) throw new Error('实时连接尚未就绪')
-    const frame = createSubscribeFarmFrame(farmId, snapshotVersion)
+    this.clientSeq += 1
+    const cmdId = createCommandId()
+    const frame = createSubscribeFarmFrame(farmId, snapshotVersion, this.clientSeq, cmdId)
     this.socket.send(JSON.stringify(frame))
     this.logFrame('out', frame)
+    return cmdId
   }
 
   private scheduleReconnect() {
@@ -146,12 +149,14 @@ export function createCommandId(): string {
   return createUuidV7()
 }
 
-export function createSubscribeFarmFrame(farmId: string, snapshotVersion: string): SubscribeFarmFrame {
+export function createSubscribeFarmFrame(farmId: string, snapshotVersion: string, clientSeq?: number, cmdId?: string): SubscribeFarmFrame {
   return {
     meta: {
       type: 'SUBSCRIBE_FARM',
       farm_id: farmId,
       protocol_version: '1',
+      ...(clientSeq === undefined ? {} : { client_seq: clientSeq }),
+      ...(cmdId === undefined ? {} : { cmd_id: cmdId }),
     },
     body: { snapshot_version: snapshotVersion },
   }

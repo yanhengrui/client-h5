@@ -28,6 +28,7 @@ export class ApiError extends Error {
     public code: string,
     message: string,
     public retryAfterMs = 0,
+    public reason = '',
   ) {
     super(message)
   }
@@ -38,6 +39,7 @@ type RequestOptions = RequestInit & { anonymous?: boolean; timeoutMs?: number; s
 export class ApiClient {
   private session: AuthSession | null = null
   private refreshPromise: Promise<void> | null = null
+  private readonly inFlightGets = new Map<string, Promise<unknown>>()
 
   constructor(
     private readonly baseUrl = '',
@@ -49,8 +51,26 @@ export class ApiClient {
     this.session = session
   }
 
-  private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    const method = options.method ?? 'GET'
+  private request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    const method = (options.method ?? 'GET').toUpperCase()
+    if (method !== 'GET') return this.executeRequest<T>(path, options)
+
+    const authScope = options.anonymous ? 'anonymous' : this.session?.accessToken ?? 'anonymous'
+    const key = `${authScope}:${path}`
+    const existing = this.inFlightGets.get(key)
+    if (existing) return existing as Promise<T>
+
+    const request = this.executeRequest<T>(path, options)
+    this.inFlightGets.set(key, request)
+    const clear = () => {
+      if (this.inFlightGets.get(key) === request) this.inFlightGets.delete(key)
+    }
+    void request.then(clear, clear)
+    return request
+  }
+
+  private async executeRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    const method = (options.method ?? 'GET').toUpperCase()
     const started = performance.now()
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? (method === 'GET' ? 5000 : 8000))
@@ -64,12 +84,18 @@ export class ApiClient {
       status = response.status
       if (response.status === 401 && !options.anonymous && !options.skipRefresh && this.session) {
         await this.refresh()
-        return this.request<T>(path, { ...options, skipRefresh: true })
+        return this.executeRequest<T>(path, { ...options, skipRefresh: true })
       }
       const data = (await response.json().catch(() => ({}))) as T & ApiErrorBody
       if (!response.ok) {
         code = data.code ?? `HTTP_${response.status}`
-        throw new ApiError(response.status, code, data.message ?? response.statusText, Number(response.headers.get('Retry-After-Ms') ?? 0))
+        throw new ApiError(
+          response.status,
+          code,
+          data.message ?? response.statusText,
+          Number(data.retry_after_ms ?? response.headers.get('Retry-After-Ms') ?? 0),
+          data.reason ?? response.headers.get('X-Capacity-Reason') ?? '',
+        )
       }
       return data
     } catch (error) {

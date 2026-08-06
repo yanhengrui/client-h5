@@ -4,6 +4,8 @@ import type { PlotPatch } from '../realtime/frame-contract'
 import type { SocketPhase, WsLog } from '../realtime/farm-socket'
 
 export type FarmState = FarmSnapshot & { sync: 'loading' | 'synced' | 'stale' | 'offline' }
+export type FarmSubscriptionPhase = 'idle' | 'subscribing' | 'live' | 'full' | 'failed'
+export type FarmSubscription = { farmId: string | null; phase: FarmSubscriptionPhase }
 export type PlayerEconomy = PlayerAssets
 export type Notice = { id: string; tone: 'success' | 'error' | 'info'; text: string }
 export type AppState = {
@@ -11,6 +13,7 @@ export type AppState = {
   farm: FarmState | null
   playerEconomy: PlayerEconomy | null
   socketPhase: SocketPhase
+  farmSubscription: FarmSubscription
   clientSeq: number
   serverSeq: number
   pending: Record<string, number>
@@ -26,6 +29,7 @@ export type Action =
   | { type: 'playerEconomy'; assets: PlayerAssets }
   | { type: 'sync'; sync: FarmState['sync'] }
   | { type: 'phase'; phase: SocketPhase }
+  | { type: 'farmSubscription'; subscription: FarmSubscription }
   | { type: 'pendingAdd'; cmdId: string; plotId: number; clientSeq: number; optimisticPatch?: PlotPatch; inventoryDelta?: { itemType: string; itemId: string; quantity: number } }
   | { type: 'pendingRemove'; cmdId: string; serverSeq?: number }
   | { type: 'serverSeq'; serverSeq?: number }
@@ -42,6 +46,7 @@ export const initialState: AppState = {
   farm: null,
   playerEconomy: null,
   socketPhase: 'idle',
+  farmSubscription: { farmId: null, phase: 'idle' },
   clientSeq: 0,
   serverSeq: 0,
   pending: {},
@@ -86,6 +91,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       const wentOffline = action.phase === 'closed' || action.phase === 'backoff'
       return { ...state, socketPhase: action.phase, farm: state.farm ? { ...state.farm, sync: wentOffline ? 'offline' : state.farm.sync } : null }
     }
+    case 'farmSubscription': return { ...state, farmSubscription: action.subscription }
     case 'pendingAdd': return {
       ...state,
       clientSeq: action.clientSeq,
