@@ -459,10 +459,10 @@ function FriendsPanel() {
 }
 
 function PetPanel() {
-  const { state, api, notify, refreshPlayerAssets, hasPet, autoHarvestEnabled, refreshPetStatus, setPetAutoHarvest } = useApp()
+  const { state, notify, hasPet, autoHarvestEnabled, refreshPetStatus, purchasePet, setPetAutoHarvest } = useApp()
   const [busy, setBusy] = useState(false)
   const [switching, setSwitching] = useState(false)
-  const buy = async () => { setBusy(true); try { await api.buyPet(); notify('小鸡搬进农场啦！', 'success'); await refreshPlayerAssets(); await refreshPetStatus() } catch (e) { showApiError(e, notify) } finally { setBusy(false) } }
+  const buy = async () => { setBusy(true); try { await purchasePet(); notify('小鸡搬进农场啦！', 'success') } catch (e) { showApiError(e, notify) } finally { setBusy(false) } }
   const check = async () => { setBusy(true); try { await refreshPetStatus() } catch (e) { showApiError(e, notify) } finally { setBusy(false) } }
   const toggleAutoHarvest = async () => {
     if (autoHarvestEnabled === null) return
@@ -476,7 +476,7 @@ function PetPanel() {
     } finally { setSwitching(false) }
   }
   const balance = state.playerEconomy?.coin_balance ?? 0
-  return <><PanelTitle icon="🐣" title="农场伙伴" subtitle="购买小鸡后，可以每 30 秒自动巡查成熟作物" /><div className="pet-stage"><div className="pet-bubble">{hasPet ? '咕咕！今天也一起努力吧。' : '给我一个温暖的新家吧？'}</div><div className="pet-big">🐔</div><h3>{hasPet === null ? '暂时没有查到伙伴状态' : hasPet ? '你的农场小鸡' : '还没有农场伙伴'}</h3>{hasPet === true && <div className="pet-auto-row"><div><b>自动收获</b><small>{autoHarvestEnabled ? '每 30 秒巡查成熟作物' : '小鸡会留在原位休息'}</small></div><button className={`pet-switch ${autoHarvestEnabled ? 'on' : ''}`} role="switch" aria-checked={Boolean(autoHarvestEnabled)} disabled={switching || autoHarvestEnabled === null} onClick={toggleAutoHarvest}><span /></button></div>}{hasPet === false && <><button className="primary" disabled={busy || balance < 200} onClick={buy}>{busy ? '正在迎接…' : '用 200 金币购买小鸡'}</button><small>{balance < 200 ? `当前 ${balance} 金币，还差 ${200 - balance} 金币` : `当前余额 ${balance} 金币`}</small></>}{hasPet === null && <button className="secondary" disabled={busy} onClick={check}>{busy ? '查询中…' : '重新查询宠物状态'}</button>}</div></>
+  return <><PanelTitle icon="🐣" title="农场伙伴" subtitle="购买小鸡后，可以每 30 秒自动巡查成熟作物" /><div className="pet-stage"><div className="pet-bubble">{busy && hasPet ? '正在搬家，马上就好！' : hasPet ? '咕咕！今天也一起努力吧。' : '给我一个温暖的新家吧？'}</div><div className={`pet-big ${busy && hasPet ? 'arriving' : ''}`}>🐔</div><h3>{hasPet === null ? '暂时没有查到伙伴状态' : hasPet ? '你的农场小鸡' : '还没有农场伙伴'}</h3>{busy && hasPet && <small className="pet-purchase-note">服务端正在确认购买，伙伴已经先来和你见面了</small>}{hasPet === true && <div className="pet-auto-row"><div><b>自动收获</b><small>{autoHarvestEnabled ? '每 30 秒巡查成熟作物' : '小鸡会留在原位休息'}</small></div><button className={`pet-switch ${autoHarvestEnabled ? 'on' : ''}`} role="switch" aria-checked={Boolean(autoHarvestEnabled)} disabled={busy || switching || autoHarvestEnabled === null} onClick={toggleAutoHarvest}><span /></button></div>}{hasPet === false && <><button className="primary" disabled={busy || balance < 200} onClick={buy}>{busy ? '正在迎接…' : '用 200 金币购买小鸡'}</button><small>{balance < 200 ? `当前 ${balance} 金币，还差 ${200 - balance} 金币` : `当前余额 ${balance} 金币`}</small></>}{hasPet === null && <button className="secondary" disabled={busy} onClick={check}>{busy ? '查询中…' : '重新查询宠物状态'}</button>}</div></>
 }
 
 function DebugPanel() {

@@ -109,6 +109,12 @@ describe('appReducer authority rules', () => {
     expect(confirmed.playerEconomy?.coin_balance).toBe(979)
   })
 
+  it('changes only the coin balance for an optimistic pet purchase', () => {
+    const loaded = appReducer(initialState, { type: 'playerEconomy', assets: { coin_balance: 300, inventory: [] } })
+    const purchasing = appReducer(loaded, { type: 'coinDelta', coin: -200 })
+    expect(purchasing.playerEconomy).toEqual({ coin_balance: 100, inventory: [] })
+  })
+
   it('keeps the signed-in player economy while visiting another farm', () => {
     const ownFarm = appReducer(initialState, { type: 'snapshot', snapshot })
     const own = appReducer(ownFarm, { type: 'playerEconomy', assets: { coin_balance: 990, inventory: [] } })

@@ -24,6 +24,7 @@ type AppContextValue = {
   hasPet: boolean | null
   autoHarvestEnabled: boolean | null
   refreshPetStatus: () => Promise<boolean>
+  purchasePet: () => Promise<void>
   setPetAutoHarvest: (enabled: boolean) => Promise<void>
   petHarvests: PetHarvestCue[]
   completePetHarvest: (eventId: string) => void
@@ -74,6 +75,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const pendingMethodsRef = useRef<Record<string, string>>({})
   const pendingSubscriptionsRef = useRef<Record<string, { farmId: string; version: string }>>({})
   const socketOpenedRef = useRef(false)
+  const petPurchasePromiseRef = useRef<Promise<void> | null>(null)
   const assetRefreshTimerRef = useRef<number | null>(null)
 
   const saveSession = useCallback((session: AppState['session']) => {
@@ -105,6 +107,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAutoHarvestEnabled(result.has_pet ? result.auto_harvest_enabled : null)
     return result.has_pet
   }, [api])
+
+  const purchasePet = useCallback(() => {
+    if (petPurchasePromiseRef.current) return petPurchasePromiseRef.current
+
+    const previousHasPet = hasPetRef.current
+    const previousAutoHarvest = autoHarvestEnabled
+    hasPetRef.current = true
+    setHasPet(true)
+    setAutoHarvestEnabled(true)
+    dispatch({ type: 'coinDelta', coin: -200 })
+
+    const purchase = api.buyPet()
+      .then(() => {
+        void Promise.all([refreshPlayerAssets(), refreshPetStatus()]).catch(() => undefined)
+      })
+      .catch((error) => {
+        hasPetRef.current = previousHasPet
+        setHasPet(previousHasPet)
+        setAutoHarvestEnabled(previousAutoHarvest)
+        dispatch({ type: 'coinDelta', coin: 200 })
+        void refreshPlayerAssets().catch(() => undefined)
+        throw error
+      })
+      .finally(() => {
+        petPurchasePromiseRef.current = null
+      })
+
+    petPurchasePromiseRef.current = purchase
+    return purchase
+  }, [api, autoHarvestEnabled, refreshPetStatus, refreshPlayerAssets])
 
   const setPetAutoHarvest = useCallback(async (enabled: boolean) => {
     const result = await api.setPetAutoHarvest(enabled)
@@ -507,7 +539,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer)
   }, [api, autoHarvestEnabled, hasPet, schedulePlayerAssetsRefresh, socket, state.session?.farmId, subscribeFarm])
 
-  return <AppContext.Provider value={{ state, api, login, logout, loadSnapshot, retryFarmSubscription, refreshPlayerAssets, farmCommand, shopTrade, hasPet, autoHarvestEnabled, refreshPetStatus, setPetAutoHarvest, petHarvests, completePetHarvest, notify, reconnectSocket: () => socket.reconnect(), disconnectSocket: () => socket.disconnect(), exportDebug }}>{children}</AppContext.Provider>
+  return <AppContext.Provider value={{ state, api, login, logout, loadSnapshot, retryFarmSubscription, refreshPlayerAssets, farmCommand, shopTrade, hasPet, autoHarvestEnabled, refreshPetStatus, purchasePet, setPetAutoHarvest, petHarvests, completePetHarvest, notify, reconnectSocket: () => socket.reconnect(), disconnectSocket: () => socket.disconnect(), exportDebug }}>{children}</AppContext.Provider>
 }
 
 export function optimisticPlotPatch(method: string, plotId: number, body: Record<string, unknown>, nowMs = Date.now()): PlotPatch | undefined {

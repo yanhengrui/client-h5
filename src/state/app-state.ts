@@ -33,6 +33,7 @@ export type Action =
   | { type: 'pendingAdd'; cmdId: string; plotId: number; clientSeq: number; optimisticPatch?: PlotPatch; inventoryDelta?: { itemType: string; itemId: string; quantity: number } }
   | { type: 'pendingRemove'; cmdId: string; serverSeq?: number }
   | { type: 'serverSeq'; serverSeq?: number }
+  | { type: 'coinDelta'; coin: number }
   | { type: 'economyDelta'; coin: number; itemType: string; itemId: string; quantity: number }
   | { type: 'economyConfirm'; coinBalance: number }
   | { type: 'ackPatch'; patch?: PlotPatch; version: string }
@@ -111,6 +112,10 @@ export function appReducer(state: AppState, action: Action): AppState {
       return { ...state, pending, serverSeq: Math.max(state.serverSeq, action.serverSeq ?? 0) }
     }
     case 'serverSeq': return { ...state, serverSeq: Math.max(state.serverSeq, action.serverSeq ?? 0) }
+    case 'coinDelta': return state.playerEconomy ? {
+      ...state,
+      playerEconomy: { ...state.playerEconomy, coin_balance: state.playerEconomy.coin_balance + action.coin },
+    } : state
     case 'economyDelta': return state.playerEconomy ? {
       ...state,
       playerEconomy: {

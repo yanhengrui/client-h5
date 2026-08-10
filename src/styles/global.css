@@ -159,6 +159,9 @@ progress { height: 8px; accent-color: var(--green); }
 .inline-form { display: flex; flex: 1 1 260px; gap: 8px; }
 .pet-stage { text-align: center; padding: 10px 20px 28px; }
 .pet-big { font-size: 120px; animation: bob 1.7s ease-in-out infinite alternate; }
+.pet-big.arriving { animation: pet-arrive .55s ease-out both; }
+.pet-purchase-note { display: block; margin: -2px 0 12px; color: #98702e; }
+@keyframes pet-arrive { from { opacity: 0; transform: translateY(18px) scale(.72) rotate(-8deg); } 70% { transform: translateY(-4px) scale(1.06) rotate(3deg); } to { opacity: 1; transform: none; } }
 .pet-bubble { width: fit-content; margin: 0 auto 2px; padding: 10px 14px; border: 2px solid #937653; border-radius: 14px 14px 14px 3px; background: white; }
 .pet-auto-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; max-width: 390px; margin: 18px auto 0; padding: 14px 16px; border: 1.5px solid #bca27e; border-radius: 15px; background: #fffdf6; text-align: left; }
 .pet-auto-row small { display: block; margin-top: 3px; color: #806d57; }
