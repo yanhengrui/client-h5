@@ -62,41 +62,66 @@ function OwnFarmRoute() {
 }
 
 function LoginPage() {
-  const { login } = useApp()
+  const { login, register } = useApp()
   const navigate = useNavigate()
   const [pending, setPending] = useState(false)
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [name, setName] = useState(() => localStorage.getItem('farm.profile-name.v1') ?? '')
-  const [nameError, setNameError] = useState('')
-  const [gate, setGate] = useState('Vite 同源代理 · /api + /ws')
+  const [formError, setFormError] = useState('')
 
   const enter = async () => {
-    const normalized = name.trim()
-    if (normalized.length < 2 || normalized.length > 12) {
-      setNameError('名字需要 2–12 个字符')
+    const normalizedUsername = username.trim().toLowerCase()
+    if (!/^[a-z0-9_]{4,32}$/.test(normalizedUsername)) {
+      setFormError('用户名需要 4–32 位，只能使用英文、数字和下划线')
       return
     }
-    setNameError('')
+    if (password.length < 8 || password.length > 128) {
+      setFormError('密码需要 8–128 个字符')
+      return
+    }
+    if (mode === 'register' && (name.trim().length < 2 || name.trim().length > 12)) {
+      setFormError('农场昵称需要 2–12 个字符')
+      return
+    }
+    if (mode === 'register' && password !== confirmPassword) {
+      setFormError('两次输入的密码不一致')
+      return
+    }
+    setFormError('')
     setPending(true)
     try {
-      const session = await login(normalized)
+      const session = mode === 'register'
+        ? await register(normalizedUsername, password, name.trim())
+        : await login(normalizedUsername, password)
       navigate(`/u/${session.userId}/farm`)
+    } catch (error) {
+      const apiError = error as ApiError
+      setFormError(errorMessage(apiError.code, apiError.message))
     } finally { setPending(false) }
   }
+  const switchMode = (next: 'login' | 'register') => { setMode(next); setFormError(''); setPassword(''); setConfirmPassword('') }
   return (
     <main className="login-page">
       <div className="sun" />
       <section className="login-card">
         <div className="brand-mark" aria-hidden="true">🌾</div>
-        <p className="eyebrow">WELCOME TO</p>
+        <p className="eyebrow">WELCOME HOME</p>
         <h1>麦穗农场</h1>
-        <p className="login-copy">给自己取个名字，认领一座连接真实后端的小农场。</p>
-        <label className="field-label" htmlFor="farmer-name">农场主名字</label>
-        <input id="farmer-name" value={name} maxLength={12} autoComplete="nickname" placeholder="例如：麦芽糖" onChange={(e) => { setName(e.target.value); setNameError('') }} onKeyDown={(e) => { if (e.key === 'Enter') void enter() }} />
-        {nameError && <p className="field-error" role="alert">{nameError}</p>}
-        <label className="field-label" htmlFor="gate">联调入口</label>
-        <input id="gate" value={gate} onChange={(e) => setGate(e.target.value)} disabled title="当前版本固定使用 Vite 同源代理" />
-        <button className="primary big" onClick={enter} disabled={pending}>{pending ? '正在创建你的农场…' : '创建农场并进入'}</button>
-        <small>当前后端使用设备游客账号；名字保存在本机，并绑定这台设备的农场身份。</small>
+        <p className="login-copy">播下四季的种子，收获属于你的田园时光。</p>
+        <div className="login-crops" aria-hidden="true"><span>🌾</span><span>🥕</span><span>🍅</span></div>
+        <div className="auth-tabs"><button className={mode === 'login' ? 'active' : ''} onClick={() => switchMode('login')}>登录</button><button className={mode === 'register' ? 'active' : ''} onClick={() => switchMode('register')}>注册新农场</button></div>
+        <label className="field-label" htmlFor="username">用户名</label>
+        <input id="username" value={username} maxLength={32} autoComplete="username" placeholder="英文、数字或下划线" onChange={(e) => { setUsername(e.target.value); setFormError('') }} />
+        {mode === 'register' && <><label className="field-label" htmlFor="farmer-name">农场昵称</label><input id="farmer-name" value={name} maxLength={12} autoComplete="nickname" placeholder="游戏内展示的名字" onChange={(e) => { setName(e.target.value); setFormError('') }} /></>}
+        <label className="field-label" htmlFor="password">密码</label>
+        <input id="password" type="password" value={password} maxLength={128} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} placeholder="至少 8 个字符" onChange={(e) => { setPassword(e.target.value); setFormError('') }} onKeyDown={(e) => { if (e.key === 'Enter' && mode === 'login') void enter() }} />
+        {mode === 'register' && <><label className="field-label" htmlFor="confirm-password">确认密码</label><input id="confirm-password" type="password" value={confirmPassword} maxLength={128} autoComplete="new-password" placeholder="再次输入密码" onChange={(e) => { setConfirmPassword(e.target.value); setFormError('') }} onKeyDown={(e) => { if (e.key === 'Enter') void enter() }} /></>}
+        {formError && <p className="field-error" role="alert">{formError}</p>}
+        <button className="primary big" onClick={enter} disabled={pending}>{pending ? '正在连接农场…' : mode === 'login' ? '登录并进入农场' : '注册并创建农场'}</button>
+        <small>{mode === 'login' ? '使用注册时设置的用户名和密码继续经营。' : '用户名用于登录，农场昵称用于游戏内展示。'}</small>
       </section>
       <div className="login-hills" aria-hidden="true"><span>🌳</span><span>🏡</span><span>🌲</span></div>
     </main>
@@ -104,7 +129,7 @@ function LoginPage() {
 }
 
 function InvitePage() {
-  const { state, login, api, notify } = useApp()
+  const { state, api, notify } = useApp()
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const [status, setStatus] = useState('准备接受邀请…')
@@ -114,7 +139,8 @@ function InvitePage() {
     void (async () => {
       try {
         if (!code) throw new Error('邀请链接缺少 code')
-        const session = state.session ?? await login()
+        const session = state.session
+        if (!session) { setStatus('请先登录，再重新打开邀请链接'); return }
         setStatus('正在加入好友农场…')
         const before = await api.friends()
         setStatus('正在确认跨分片好友关系…')
@@ -128,7 +154,7 @@ function InvitePage() {
       }
     })()
     return () => { active = false }
-  }, [api, code, login, navigate, notify, state.session])
+  }, [api, code, navigate, notify, state.session])
   return <main className="center-page"><div className="paper-card"><div className="spinner" /><h1>{status}</h1></div></main>
 }
 
@@ -207,7 +233,14 @@ function FarmPage() {
         </div>
         <nav>
           <button onClick={() => setPanel('tasks')}>📒 <span>任务</span></button>
-          <button onClick={() => setPanel('mail')}>✉️ <span>邮件</span></button>
+          <button className="mail-nav-button" onClick={() => setPanel('mail')}>
+            ✉️ <span>邮件</span>
+            {(state.mailboxSummary?.unread_count ?? 0) > 0 && (
+              <b className="mail-unread-badge" aria-label={`${state.mailboxSummary?.unread_count} 封未读邮件`}>
+                {(state.mailboxSummary?.unread_count ?? 0) > 99 ? '99+' : state.mailboxSummary?.unread_count}
+              </b>
+            )}
+          </button>
           <button onClick={() => setPanel('friends')}>👥 <span>好友</span></button>
           <button onClick={() => setPanel('catalog')}>📖 <span>图鉴</span></button>
           {import.meta.env.DEV && <button onClick={() => setPanel('debug')}>⚙️ <span>联调</span></button>}
@@ -451,11 +484,13 @@ function TasksPanel() {
 }
 
 function MailPanel() {
-  const { api, notify, refreshPlayerAssets, state } = useApp()
+  const { api, notify, refreshMailboxSummary, refreshPlayerAssets, state } = useApp()
   const cacheKey = panelCacheKey(state.session?.userId, 'mail')
   const [mails, setMails] = useState<Mail[] | null>(() => readPanelCache<Mail[]>(cacheKey))
   const [busy, setBusy] = useState('')
-  const load = () => api.mails().then((r) => setMails(writePanelCache(cacheKey, r.mails))).catch((e) => showApiError(e, notify))
+  const load = () => Promise.all([api.mails(), refreshMailboxSummary()])
+    .then(([r]) => setMails(writePanelCache(cacheKey, r.mails)))
+    .catch((e) => showApiError(e, notify))
   useEffect(() => { void load() }, [])
   const open = async (mail: Mail) => { if (mail.status === 'UNREAD') { try { await api.readMail(String(mail.mail_id)); load() } catch (e) { showApiError(e, notify) } } }
   const claim = async (id: string) => { setBusy(id); try { await api.claimAttachment(id); notify('附件已放入仓库', 'success'); await refreshPlayerAssets(); load() } catch (e) { showApiError(e, notify) } finally { setBusy('') } }
@@ -469,10 +504,47 @@ function FriendsPanel() {
   const [friends, setFriends] = useState<Friend[] | null>(() => readPanelCache<Friend[]>(cacheKey))
   const [code, setCode] = useState('')
   const [created, setCreated] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [copied, setCopied] = useState(false)
   const [accepting, setAccepting] = useState(false)
   const load = () => api.friends().then((r) => setFriends(writePanelCache(cacheKey, r.friends))).catch((e) => showApiError(e, notify))
   useEffect(() => { void load() }, [])
-  const create = async () => { try { const result = await api.createInvite(); setCreated(result.invite_code) } catch (e) { showApiError(e, notify) } }
+  const create = async () => {
+    setCreating(true)
+    setCopied(false)
+    try {
+      const result = await api.createInvite()
+      setCreated(result.invite_code)
+    } catch (e) {
+      showApiError(e, notify)
+    } finally {
+      setCreating(false)
+    }
+  }
+  const copyInvite = async () => {
+    if (!created) return
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(created)
+      } else {
+        const copyField = document.createElement('textarea')
+        copyField.value = created
+        copyField.setAttribute('readonly', '')
+        copyField.style.position = 'fixed'
+        copyField.style.opacity = '0'
+        document.body.appendChild(copyField)
+        copyField.select()
+        const copiedWithFallback = document.execCommand('copy')
+        copyField.remove()
+        if (!copiedWithFallback) throw new Error('copy command unavailable')
+      }
+      setCopied(true)
+      notify('邀请码已复制，可以发给好友啦', 'success')
+      window.setTimeout(() => setCopied(false), 1800)
+    } catch {
+      notify('复制失败，请长按邀请码手动复制', 'error')
+    }
+  }
   const accept = async () => {
     setAccepting(true)
     try {
@@ -487,7 +559,31 @@ function FriendsPanel() {
       setAccepting(false)
     }
   }
-  return <><PanelTitle icon="👥" title="农场好友" subtitle="互相浇水，也可以悄悄摘一穗" /><div className="invite-box"><button className="secondary" onClick={create}>生成邀请码</button>{created && <code>{created}</code>}<div className="inline-form"><input placeholder="输入邀请码" value={code} onChange={(e) => setCode(e.target.value)} /><button className="small-button" disabled={!code.trim() || accepting} onClick={accept}>{accepting ? '同步中…' : '接受'}</button></div></div><ListLoading value={friends}>{(friends ?? []).map((friend) => <article className="list-card" key={friend.user_id}><div><h3>{friend.display_name}</h3><p>去看看 TA 的作物长得怎么样</p></div><button className="small-button" onClick={() => navigate(`/farm/${friend.user_id}`, { state: { friendDisplayName: friend.display_name } })}>拜访</button></article>)}</ListLoading></>
+  return <>
+    <PanelTitle icon="👥" title="农场好友" subtitle="分享田园的好时光，去好友农场串串门" />
+    <section className="friend-invite-card">
+      <div className="invite-card-heading">
+        <span className="invite-card-icon">✦</span>
+        <div><h3>邀请一位新邻居</h3><p>生成专属邀请码，发送给想一起种田的朋友</p></div>
+      </div>
+      {!created ? (
+        <button className="primary invite-create-button" disabled={creating} onClick={create}>{creating ? '正在生成…' : '生成专属邀请码'}</button>
+      ) : (
+        <div className="invite-code-shell">
+          <div className="invite-code-copy"><span>我的邀请码</span><code>{created}</code></div>
+          <button className={`copy-invite-button ${copied ? 'copied' : ''}`} onClick={copyInvite} aria-live="polite"><span>{copied ? '✓' : '⧉'}</span>{copied ? '已复制' : '复制'}</button>
+          <button className="invite-refresh-button" disabled={creating} onClick={create} aria-label="重新生成邀请码" title="重新生成邀请码">↻</button>
+        </div>
+      )}
+      <div className="invite-divider"><span>或使用好友的邀请码</span></div>
+      <div className="invite-accept-form">
+        <label htmlFor="friend-invite-code">好友邀请码</label>
+        <div className="inline-form"><input id="friend-invite-code" placeholder="粘贴或输入邀请码" value={code} onChange={(e) => setCode(e.target.value)} /><button className="small-button" disabled={!code.trim() || accepting} onClick={accept}>{accepting ? '同步中…' : '接受邀请'}</button></div>
+      </div>
+    </section>
+    <div className="friends-list-heading"><div><span>我的邻居</span><small>{friends === null ? '正在清点…' : `${friends.length} 位好友`}</small></div><i /></div>
+    <ListLoading value={friends}>{(friends ?? []).map((friend) => <article className="list-card friend-card" key={friend.user_id}><div className="friend-avatar">{friend.display_name.trim().slice(0, 1).toUpperCase() || '友'}</div><div className="friend-card-copy"><h3>{friend.display_name}</h3><p>去看看 TA 的作物长得怎么样</p></div><button className="small-button friend-visit-button" onClick={() => navigate(`/farm/${friend.user_id}`, { state: { friendDisplayName: friend.display_name } })}>拜访 <span>→</span></button></article>)}</ListLoading>
+  </>
 }
 
 function PetPanel() {

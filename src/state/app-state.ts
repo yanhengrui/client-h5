@@ -1,4 +1,4 @@
-import type { AuthSession, FarmSnapshot, InventoryItem, PlayerAssets, PlotView } from '../api/contract'
+import type { AuthSession, FarmSnapshot, InventoryItem, MailboxSummary, PlayerAssets, PlotView } from '../api/contract'
 import type { HttpLog } from '../api/api-client'
 import type { PlotPatch } from '../realtime/frame-contract'
 import type { SocketPhase, WsLog } from '../realtime/farm-socket'
@@ -12,6 +12,7 @@ export type AppState = {
   session: AuthSession | null
   farm: FarmState | null
   playerEconomy: PlayerEconomy | null
+  mailboxSummary: MailboxSummary | null
   socketPhase: SocketPhase
   farmSubscription: FarmSubscription
   clientSeq: number
@@ -27,6 +28,7 @@ export type Action =
   | { type: 'session'; session: AuthSession | null }
   | { type: 'snapshot'; snapshot: FarmSnapshot }
   | { type: 'playerEconomy'; assets: PlayerAssets }
+  | { type: 'mailboxSummary'; summary: MailboxSummary }
   | { type: 'sync'; sync: FarmState['sync'] }
   | { type: 'phase'; phase: SocketPhase }
   | { type: 'farmSubscription'; subscription: FarmSubscription }
@@ -46,6 +48,7 @@ export const initialState: AppState = {
   session: null,
   farm: null,
   playerEconomy: null,
+  mailboxSummary: null,
   socketPhase: 'idle',
   farmSubscription: { farmId: null, phase: 'idle' },
   clientSeq: 0,
@@ -84,9 +87,13 @@ const adjustInventory = (items: InventoryItem[], itemType: string, itemId: strin
 
 export function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
-    case 'session': return { ...state, session: action.session, playerEconomy: action.session ? state.playerEconomy : null }
+    case 'session': return { ...state, session: action.session, playerEconomy: action.session ? state.playerEconomy : null, mailboxSummary: action.session ? state.mailboxSummary : null }
     case 'snapshot': return { ...state, farm: { ...action.snapshot, sync: 'synced' } }
     case 'playerEconomy': return { ...state, playerEconomy: action.assets }
+    case 'mailboxSummary': {
+      if (state.mailboxSummary && action.summary.mailbox_version <= state.mailboxSummary.mailbox_version) return state
+      return { ...state, mailboxSummary: action.summary }
+    }
     case 'sync': return state.farm ? { ...state, farm: { ...state.farm, sync: action.sync } } : state
     case 'phase': {
       const wentOffline = action.phase === 'closed' || action.phase === 'backoff'

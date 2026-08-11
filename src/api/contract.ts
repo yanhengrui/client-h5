@@ -6,6 +6,7 @@ export type AuthSession = {
   sessionId: string
   userId: ID
   farmId: ID
+  username?: string
   displayName?: string
 }
 
@@ -16,6 +17,7 @@ export type GuestLoginResponse = {
   user_id: ID
   farm_id: ID
   expires_in: number
+  display_name: string
 }
 
 export type PlotView = {
@@ -84,6 +86,10 @@ export type Mail = {
   created_at: string
   attachments?: Attachment[]
 }
+export type MailboxSummary = {
+  unread_count: number
+  mailbox_version: number
+}
 export type Task = {
   task_key: string
   description: string
@@ -141,6 +147,8 @@ export function normalizePlayerAssets(raw: PlayerAssets): PlayerAssets {
 export const ERROR_MESSAGES: Record<string, string> = {
   AUTH_UNAUTHORIZED: '登录状态已失效，请重新进入农场',
   AUTH_TOKEN_EXPIRED: '登录凭证已过期，正在刷新',
+  AUTH_IDENTITY_EXISTS: '这个用户名已经被注册，请换一个',
+  AUTH_FORBIDDEN: '账号已被停用，请联系管理员',
   FARM_VERSION_CONFLICT: '农场刚刚发生了变化，已为你刷新',
   FARM_PLOT_STATE_INVALID: '这块土地现在不能这样操作',
   FARM_PLOT_NOT_MATURE: '作物还没有成熟，再等等吧',

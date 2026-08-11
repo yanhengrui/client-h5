@@ -7,6 +7,23 @@ const snapshot = {
 }
 
 describe('appReducer authority rules', () => {
+  it('keeps the newest mailbox badge version', () => {
+    const pushed = appReducer(initialState, {
+      type: 'mailboxSummary',
+      summary: { unread_count: 3, mailbox_version: 8 },
+    })
+    const stale = appReducer(pushed, {
+      type: 'mailboxSummary',
+      summary: { unread_count: 1, mailbox_version: 7 },
+    })
+    expect(stale.mailboxSummary).toEqual({ unread_count: 3, mailbox_version: 8 })
+    const duplicate = appReducer(stale, {
+      type: 'mailboxSummary',
+      summary: { unread_count: 99, mailbox_version: 8 },
+    })
+    expect(duplicate.mailboxSummary).toEqual({ unread_count: 3, mailbox_version: 8 })
+  })
+
   it('atomically replaces a snapshot', () => {
     const next = appReducer(initialState, { type: 'snapshot', snapshot })
     expect(next.farm?.version).toBe('7')

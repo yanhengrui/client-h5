@@ -1,4 +1,4 @@
-import type { AckFrame, ClientFrame, CommandFrame, EventFrame, HandoffFrame, PlotPatch, ServerFrame, SubscribeFarmFrame } from './frame-contract'
+import type { AckFrame, ClientFrame, CommandFrame, EventFrame, HandoffFrame, MailboxChangedFrame, PlotPatch, ServerFrame, SubscribeFarmFrame } from './frame-contract'
 import { parseServerFrame } from './frame-contract'
 import { createUuidV7 } from '../shared/uuid-v7'
 
@@ -15,6 +15,7 @@ type SocketCallbacks = {
   onPhase: (phase: SocketPhase) => void
   onAck: (frame: AckFrame) => void
   onEvent: (frame: EventFrame) => void
+  onMailboxChanged: (frame: MailboxChangedFrame) => void
   onLog: (log: WsLog) => void
   onOpen: () => void
 }
@@ -66,6 +67,7 @@ export class FarmSocket {
       }
       this.logFrame('in', frame)
       if (frame.meta.type === 'ACK') this.callbacks.onAck(frame as AckFrame)
+      else if (frame.meta.type === 'EVENT' && frame.meta.service === 'mail' && frame.meta.method === 'MailboxChanged') this.callbacks.onMailboxChanged(frame as MailboxChangedFrame)
       else if (frame.meta.type === 'EVENT') this.callbacks.onEvent(frame as EventFrame)
       else this.handleHandoff(frame as HandoffFrame)
     }

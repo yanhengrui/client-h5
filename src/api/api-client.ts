@@ -6,6 +6,7 @@ import type {
   FriendsResponse,
   GuestLoginResponse,
   Mail,
+  MailboxSummary,
   PlayerAssets,
   Task,
 } from './contract'
@@ -120,14 +121,14 @@ export class ApiClient {
     if (this.refreshPromise) return this.refreshPromise
     const current = this.session
     if (!current) return Promise.reject(new ApiError(401, 'AUTH_UNAUTHORIZED', '没有可刷新的会话'))
-    this.refreshPromise = this.request<{ access_token: string }>('/api/v1/auth/refresh', {
+    this.refreshPromise = this.request<{ access_token: string; refresh_token: string }>('/api/v1/auth/refresh', {
       method: 'POST',
       anonymous: true,
       skipRefresh: true,
       body: JSON.stringify({ session_id: current.sessionId, refresh_token: current.refreshToken }),
     })
       .then((res) => {
-        this.session = { ...current, accessToken: res.access_token }
+        this.session = { ...current, accessToken: res.access_token, refreshToken: res.refresh_token }
         this.onSession(this.session)
       })
       .catch((error) => {
@@ -153,9 +154,49 @@ export class ApiClient {
       sessionId: res.session_id,
       userId: String(res.user_id),
       farmId: String(res.farm_id),
+      displayName: res.display_name || displayName,
     }
     this.session = session
     return session
+  }
+
+  async register(username: string, password: string, displayName: string) {
+    return this.createPasswordSession('/api/v1/auth/register', { username, password, display_name: displayName }, username)
+  }
+
+  async passwordLogin(username: string, password: string) {
+    return this.createPasswordSession('/api/v1/auth/login', { username, password }, username)
+  }
+
+  private async createPasswordSession(path: string, body: Record<string, string>, username: string) {
+    const res = await this.request<GuestLoginResponse>(path, {
+      method: 'POST', anonymous: true, body: JSON.stringify(body),
+    })
+    const session: AuthSession = {
+      accessToken: res.access_token,
+      refreshToken: res.refresh_token,
+      sessionId: res.session_id,
+      userId: String(res.user_id),
+      farmId: String(res.farm_id),
+      username,
+      displayName: res.display_name,
+    }
+    this.session = session
+    return session
+  }
+
+  async logout() {
+    const current = this.session
+    if (!current) return
+    try {
+      await this.request<{ ok: boolean }>('/api/v1/auth/logout', {
+        method: 'POST', anonymous: true, skipRefresh: true,
+        body: JSON.stringify({ session_id: current.sessionId, refresh_token: current.refreshToken }),
+      })
+    } finally {
+      this.session = null
+      this.onSession(null)
+    }
   }
 
   snapshot(farmId?: string) {
@@ -210,6 +251,9 @@ export class ApiClient {
   }
   mails() {
     return this.request<{ mails: Mail[] }>('/api/v1/mail/list?limit=20')
+  }
+  mailSummary() {
+    return this.request<MailboxSummary>('/api/v1/mail/summary')
   }
   readMail(mailId: string) {
     return this.request<{ ok: boolean }>('/api/v1/mail/read', { method: 'POST', body: JSON.stringify({ mail_id: Number(mailId) }) })

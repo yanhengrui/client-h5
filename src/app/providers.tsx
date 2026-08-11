@@ -3,22 +3,23 @@ import { ApiClient, ApiError } from '../api/api-client'
 import type { AuthSession, FarmSnapshot } from '../api/contract'
 import { errorMessage, withEffectiveGrowthStage } from '../api/contract'
 import { FarmSocket } from '../realtime/farm-socket'
-import type { AckFrame, EventFrame, PlotPatch } from '../realtime/frame-contract'
+import type { AckFrame, EventFrame, MailboxChangedFrame, PlotPatch } from '../realtime/frame-contract'
 import { appReducer, initialState, type AppState } from '../state/app-state'
 import { detectPetHarvest, detectPetHarvestsFromSnapshot, type PetHarvestCue } from './pet-animation'
 import { cropDefinition, cropInventoryCount, type CropId } from './crops'
 
 const SESSION_KEY = 'farm.session.v1'
-const DEVICE_KEY = 'farm.device-id.v1'
 const PROFILE_NAME_KEY = 'farm.profile-name.v1'
 
 type AppContextValue = {
   state: AppState
   api: ApiClient
-  login: (displayName?: string) => Promise<AuthSession>
-  logout: () => void
+  login: (username: string, password: string) => Promise<AuthSession>
+  register: (username: string, password: string, displayName: string) => Promise<AuthSession>
+  logout: () => Promise<void>
   loadSnapshot: (farmId?: string) => Promise<FarmSnapshot>
   refreshPlayerAssets: () => Promise<void>
+  refreshMailboxSummary: () => Promise<void>
   retryFarmSubscription: () => Promise<void>
   farmCommand: (method: string, plotId: number, body?: Record<string, unknown>) => void
   shopTrade: (kind: 'buy' | 'sell', cropId: CropId, quantity: number) => Promise<void>
@@ -42,16 +43,6 @@ function loadSession(): AppState['session'] {
     const session = JSON.parse(sessionStorage.getItem(SESSION_KEY) ?? 'null') as AppState['session']
     return session
   } catch { return null }
-}
-
-function deviceId(displayName: string) {
-  const profileKey = `${DEVICE_KEY}:${displayName.trim().toLocaleLowerCase()}`
-  let value = localStorage.getItem(profileKey)
-  if (!value) {
-    value = crypto.randomUUID()
-    localStorage.setItem(profileKey, value)
-  }
-  return value
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -92,6 +83,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const refreshPlayerAssets = useCallback(async () => {
     const assets = await api.assets()
     dispatch({ type: 'playerEconomy', assets })
+  }, [api])
+
+  const refreshMailboxSummary = useCallback(async () => {
+    const summary = await api.mailSummary()
+    dispatch({ type: 'mailboxSummary', summary })
   }, [api])
 
   const schedulePlayerAssetsRefresh = useCallback(() => {
@@ -261,6 +257,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [schedulePlayerAssetsRefresh])
 
+  const handleMailboxChanged = useCallback((frame: MailboxChangedFrame) => {
+    dispatch({
+      type: 'mailboxSummary',
+      summary: { unread_count: frame.body.unread_count, mailbox_version: frame.body.mailbox_version },
+    })
+  }, [])
+
   const socket = useMemo(() => new FarmSocket({
     onPhase: (phase) => {
       if (phase !== 'open') acceptEventsRef.current = false
@@ -268,9 +271,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     onAck: handleAck,
     onEvent: handleEvent,
+    onMailboxChanged: handleMailboxChanged,
     onLog: (log) => dispatch({ type: 'wsLog', log }),
     onOpen: () => syncOnOpenRef.current(),
-  }), [handleAck, handleEvent])
+  }), [handleAck, handleEvent, handleMailboxChanged])
 
   const subscribeFarm = useCallback((farmId: string, version: string) => {
     acceptEventsRef.current = false
@@ -310,6 +314,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void loadSnapshot(activeFarmRef.current?.farmId ?? desiredFarmIdRef.current).finally(() => { resyncingRef.current = false })
   }
   syncOnOpenRef.current = () => {
+    void refreshMailboxSummary().catch(() => undefined)
     const current = activeFarmRef.current
     const desired = desiredFarmIdRef.current
     if (!socketOpenedRef.current && current && (!desired || current.farmId === desired)) {
@@ -331,25 +336,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await loadSnapshot(farmId)
   }, [loadSnapshot, socket])
 
-  const login = useCallback(async (displayName?: string) => {
+  const establishSession = useCallback(async (session: AuthSession) => {
+    api.setSession(session)
+    saveSession(session)
+    if (session.displayName) localStorage.setItem(PROFILE_NAME_KEY, session.displayName)
+    await Promise.all([loadSnapshot(session.farmId), refreshPlayerAssets(), refreshMailboxSummary()])
+    socket.connect(session.accessToken)
+    return session
+  }, [api, loadSnapshot, refreshMailboxSummary, refreshPlayerAssets, saveSession, socket])
+
+  const login = useCallback(async (username: string, password: string) => {
     try {
-      const name = displayName?.trim() || localStorage.getItem(PROFILE_NAME_KEY) || '新农场主'
-      const session = await api.guestLogin(deviceId(name), name)
-      localStorage.setItem(PROFILE_NAME_KEY, name)
-      const namedSession = { ...session, displayName: name }
-      api.setSession(namedSession)
-      saveSession(namedSession)
-      await Promise.all([loadSnapshot(namedSession.farmId), refreshPlayerAssets()])
-      socket.connect(namedSession.accessToken)
-      return namedSession
+      return await establishSession(await api.passwordLogin(username.trim().toLowerCase(), password))
     } catch (error) {
       const apiError = error as ApiError
       notify(errorMessage(apiError.code, apiError.message), 'error')
       throw error
     }
-  }, [api, loadSnapshot, notify, refreshPlayerAssets, saveSession, socket])
+  }, [api, establishSession, notify])
 
-  const logout = useCallback(() => {
+  const register = useCallback(async (username: string, password: string, displayName: string) => {
+    try {
+      return await establishSession(await api.register(username.trim().toLowerCase(), password, displayName.trim()))
+    } catch (error) {
+      const apiError = error as ApiError
+      notify(errorMessage(apiError.code, apiError.message), 'error')
+      throw error
+    }
+  }, [api, establishSession, notify])
+
+  const logout = useCallback(async () => {
     socket.disconnect()
     socketOpenedRef.current = false
     pendingSubscriptionsRef.current = {}
@@ -360,9 +376,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setHasPet(null)
     setAutoHarvestEnabled(null)
     setPetHarvests([])
-    saveSession(null)
+    try { await api.logout() } catch { saveSession(null) }
     dispatch({ type: 'notice', notice: null })
-  }, [saveSession, socket])
+  }, [api, saveSession, socket])
 
   const farmCommand = useCallback((method: string, plotId: number, body: Record<string, unknown> = {}) => {
     const farm = stateRef.current.farm
@@ -436,22 +452,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false
     const restore = async () => {
-      const profileName = localStorage.getItem(PROFILE_NAME_KEY)?.trim()
-      let session = stateRef.current.session
-
-      // The numeric user/farm IDs in sessionStorage may outlive a local database
-      // reset. Re-authenticate the stable device identity before trusting them.
-      if (profileName) {
-        const verified = await api.guestLogin(deviceId(profileName), profileName)
-        session = { ...verified, displayName: profileName }
-        api.setSession(session)
-        saveSession(session)
-      } else if (session) {
-        api.setSession(session)
-      }
+      const session = stateRef.current.session
+      if (session) api.setSession(session)
 
       if (!session || cancelled) return
-      await Promise.all([loadSnapshot(session.farmId), refreshPlayerAssets()])
+      await Promise.all([loadSnapshot(session.farmId), refreshPlayerAssets(), refreshMailboxSummary()])
       if (!cancelled && stateRef.current.session?.userId === session.userId) {
         socket.connect(session.accessToken)
       }
@@ -459,6 +464,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void restore().catch(() => undefined)
     return () => { cancelled = true; socket.disconnect() }
   }, []) // restore once on first mount
+
+  useEffect(() => {
+    const reconcileMailbox = () => {
+      if (!document.hidden && stateRef.current.session) void refreshMailboxSummary().catch(() => undefined)
+    }
+    document.addEventListener('visibilitychange', reconcileMailbox)
+    return () => document.removeEventListener('visibilitychange', reconcileMailbox)
+  }, [refreshMailboxSummary])
 
   useEffect(() => {
     if (!state.session) {
@@ -541,7 +554,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer)
   }, [api, autoHarvestEnabled, hasPet, schedulePlayerAssetsRefresh, socket, state.session?.farmId, subscribeFarm])
 
-  return <AppContext.Provider value={{ state, api, login, logout, loadSnapshot, retryFarmSubscription, refreshPlayerAssets, farmCommand, shopTrade, hasPet, autoHarvestEnabled, refreshPetStatus, purchasePet, setPetAutoHarvest, petHarvests, completePetHarvest, notify, reconnectSocket: () => socket.reconnect(), disconnectSocket: () => socket.disconnect(), exportDebug }}>{children}</AppContext.Provider>
+  return <AppContext.Provider value={{ state, api, login, register, logout, loadSnapshot, retryFarmSubscription, refreshPlayerAssets, refreshMailboxSummary, farmCommand, shopTrade, hasPet, autoHarvestEnabled, refreshPetStatus, purchasePet, setPetAutoHarvest, petHarvests, completePetHarvest, notify, reconnectSocket: () => socket.reconnect(), disconnectSocket: () => socket.disconnect(), exportDebug }}>{children}</AppContext.Provider>
 }
 
 export function optimisticPlotPatch(method: string, plotId: number, body: Record<string, unknown>, nowMs = Date.now()): PlotPatch | undefined {

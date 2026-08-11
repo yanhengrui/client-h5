@@ -11,6 +11,7 @@ export type PlotPatch = {
 
 type Meta = {
   type: 'COMMAND' | 'SUBSCRIBE_FARM' | 'ACK' | 'EVENT' | 'HANDOFF'
+  service?: string
   method?: string
   client_seq?: number
   server_seq?: number
@@ -33,12 +34,16 @@ export type EventFrame = {
   meta: Meta & { type: 'EVENT' }
   body: { event_id: string; version: string; patch: PlotPatch; actor_user_id: string; command_type?: string }
 }
+export type MailboxChangedFrame = {
+  meta: Meta & { type: 'EVENT'; service: 'mail'; method: 'MailboxChanged' }
+  body: { unread_count: number; mailbox_version: number }
+}
 export type HandoffFrame = {
   meta: Meta & { type: 'HANDOFF' }
   body: { resume_ticket?: string; retry_after_ms?: number; reason?: string }
 }
 export type ClientFrame = CommandFrame | SubscribeFarmFrame
-export type ServerFrame = AckFrame | EventFrame | HandoffFrame
+export type ServerFrame = AckFrame | EventFrame | MailboxChangedFrame | HandoffFrame
 
 export function parseServerFrame(raw: string): ServerFrame | null {
   try {

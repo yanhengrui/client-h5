@@ -29,6 +29,19 @@ describe('createSubscribeFarmFrame', () => {
 })
 
 describe('server control frames', () => {
+  it('accepts a mailbox badge event without mail content', () => {
+    const frame = parseServerFrame(JSON.stringify({
+      meta: { type: 'EVENT', service: 'mail', method: 'MailboxChanged', server_seq: 20 },
+      body: { unread_count: 4, mailbox_version: 9 },
+    }))
+    expect(frame).toEqual({
+      meta: { type: 'EVENT', service: 'mail', method: 'MailboxChanged', server_seq: 20 },
+      body: { unread_count: 4, mailbox_version: 9 },
+    })
+    expect(JSON.stringify(frame)).not.toContain('title')
+    expect(JSON.stringify(frame)).not.toContain('content')
+  })
+
   it('accepts the HANDOFF frame used by rolling updates', () => {
     expect(parseServerFrame(JSON.stringify({
       meta: { type: 'HANDOFF', server_seq: 19 },
