@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createCommandId, createSubscribeFarmFrame } from './farm-socket'
+import { parseServerFrame } from './frame-contract'
 
 describe('createCommandId', () => {
   it('creates unique compact UUIDv7 ids', () => {
@@ -23,6 +24,18 @@ describe('createSubscribeFarmFrame', () => {
         cmd_id: '019abcdef',
       },
       body: { snapshot_version: '17' },
+    })
+  })
+})
+
+describe('server control frames', () => {
+  it('accepts the HANDOFF frame used by rolling updates', () => {
+    expect(parseServerFrame(JSON.stringify({
+      meta: { type: 'HANDOFF', server_seq: 19 },
+      body: { resume_ticket: 'ticket', retry_after_ms: 750, reason: 'SERVER_DRAINING' },
+    }))).toEqual({
+      meta: { type: 'HANDOFF', server_seq: 19 },
+      body: { resume_ticket: 'ticket', retry_after_ms: 750, reason: 'SERVER_DRAINING' },
     })
   })
 })

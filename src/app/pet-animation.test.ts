@@ -28,7 +28,7 @@ const frame: EventFrame = {
 describe('detectPetHarvest', () => {
   it('detects a confirmed owner-side mature harvest when a pet is active', () => {
     expect(detectPetHarvest({ hasPet: true, farm, ownFarmId: '42', pendingPlotIds: [], frame, nowMs: Date.parse('2026-08-03T00:10:00Z') }))
-      .toEqual({ eventId: 'evt-pet', plotId: 3 })
+      .toEqual({ eventId: 'evt-pet', plotId: 3, cropId: 'WHEAT' })
   })
 
   it('does not animate the current tab manual harvest', () => {
@@ -67,7 +67,7 @@ describe('detectPetHarvest', () => {
     }
 
     expect(detectPetHarvest({ hasPet: true, farm: laterFarm, ownFarmId: '42', pendingPlotIds: [], frame: laterFrame, nowMs: Date.parse('2026-08-03T00:30:00Z') }))
-      .toEqual({ eventId: 'evt-pet-later', plotId: 7 })
+      .toEqual({ eventId: 'evt-pet-later', plotId: 7, cropId: 'WHEAT' })
   })
 })
 
@@ -86,7 +86,7 @@ describe('detectPetHarvestsFromSnapshot', () => {
       ownFarmId: '42',
       pendingPlotIds: [],
       nowMs: Date.parse('2026-08-03T00:10:00Z'),
-    })).toEqual([{ eventId: 'pet-reconcile:42:8:3', plotId: 3 }])
+    })).toEqual([{ eventId: 'pet-reconcile:42:8:3', plotId: 3, cropId: 'WHEAT' }])
   })
 
   it('does not infer pet work while auto harvest is off or a local command is pending', () => {

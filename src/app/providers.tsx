@@ -6,6 +6,7 @@ import { FarmSocket } from '../realtime/farm-socket'
 import type { AckFrame, EventFrame, PlotPatch } from '../realtime/frame-contract'
 import { appReducer, initialState, type AppState } from '../state/app-state'
 import { detectPetHarvest, detectPetHarvestsFromSnapshot, type PetHarvestCue } from './pet-animation'
+import { cropDefinition, cropInventoryCount, type CropId } from './crops'
 
 const SESSION_KEY = 'farm.session.v1'
 const DEVICE_KEY = 'farm.device-id.v1'
@@ -20,7 +21,7 @@ type AppContextValue = {
   refreshPlayerAssets: () => Promise<void>
   retryFarmSubscription: () => Promise<void>
   farmCommand: (method: string, plotId: number, body?: Record<string, unknown>) => void
-  shopTrade: (kind: 'buy' | 'sell', quantity: number) => Promise<void>
+  shopTrade: (kind: 'buy' | 'sell', cropId: CropId, quantity: number) => Promise<void>
   hasPet: boolean | null
   autoHarvestEnabled: boolean | null
   refreshPetStatus: () => Promise<boolean>
@@ -370,7 +371,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return notify('当前农场仅可查看，暂时不能操作', 'info')
     }
     if (Object.values(stateRef.current.pending).includes(plotId)) return
-    if (!hasCommandInventory(method, stateRef.current.playerEconomy?.inventory ?? [])) {
+    if (!hasCommandInventory(method, stateRef.current.playerEconomy?.inventory ?? [], String(body.seed_item_id ?? 'WHEAT'))) {
       notify('种子不足，请先去种子商店购买', 'info')
       return
     }
@@ -383,7 +384,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         plotId,
         clientSeq: socket.sequence,
         optimisticPatch: optimisticPlotPatch(method, plotId, body),
-        inventoryDelta: optimisticInventoryDelta(method, farm.plots.find((plot) => plot.plot_id === plotId)),
+        inventoryDelta: optimisticInventoryDelta(method, farm.plots.find((plot) => plot.plot_id === plotId), body),
       })
       ackTimers.current[cmdId] = window.setTimeout(() => {
         delete pendingMethodsRef.current[cmdId]
@@ -397,14 +398,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [notify, schedulePlayerAssetsRefresh, socket])
 
-  const shopTrade = useCallback(async (kind: 'buy' | 'sell', quantity: number) => {
+  const shopTrade = useCallback(async (kind: 'buy' | 'sell', cropId: CropId, quantity: number) => {
     const amount = Math.max(1, Math.floor(quantity))
+    const crop = cropDefinition(cropId)
     const optimistic = kind === 'buy'
-      ? { coin: -10 * amount, itemType: 'SEED', itemId: '1', quantity: amount }
-      : { coin: 20 * amount, itemType: 'CROP', itemId: '1', quantity: -amount }
+      ? { coin: -crop.seedPrice * amount, itemType: 'SEED', itemId: crop.itemId, quantity: amount }
+      : { coin: crop.sellPrice * amount, itemType: 'CROP', itemId: crop.itemId, quantity: -amount }
     dispatch({ type: 'economyDelta', ...optimistic })
     try {
-      const result = await (kind === 'buy' ? api.purchase(amount) : api.sell(amount))
+      const result = await (kind === 'buy' ? api.purchase(crop.id, amount) : api.sell(crop.id, amount))
       dispatch({ type: 'economyConfirm', coinBalance: result.coin_balance })
       schedulePlayerAssetsRefresh()
     } catch (error) {
@@ -544,29 +546,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
 export function optimisticPlotPatch(method: string, plotId: number, body: Record<string, unknown>, nowMs = Date.now()): PlotPatch | undefined {
   if (method === 'farm.Plant') {
+    const crop = cropDefinition(String(body.seed_item_id ?? 'WHEAT'))
     return {
       plot_id: plotId,
       state: 'GROWING',
-      crop_id: String(body.seed_item_id ?? 'WHEAT'),
+      crop_id: crop.id,
       growth_stage: 'SEEDLING',
       planted_at: new Date(nowMs).toISOString(),
-      mature_at: new Date(nowMs + 10 * 60 * 1000).toISOString(),
-      remaining_yield: 5,
+      mature_at: new Date(nowMs + crop.growthMinutes * 60 * 1000).toISOString(),
+      remaining_yield: crop.harvestYield,
     }
   }
   if (method === 'farm.Harvest') return { plot_id: plotId, state: 'EMPTY', crop_id: '', growth_stage: '' }
   return undefined
 }
 
-export function hasCommandInventory(method: string, inventory: Array<{ item_type: string; quantity: number }>) {
+export function hasCommandInventory(method: string, inventory: Array<{ item_type: string; item_id: string; quantity: number }>, cropId = 'WHEAT') {
   if (method !== 'farm.Plant') return true
-  return inventory.some((item) => item.item_type.toUpperCase().includes('SEED') && item.quantity > 0)
+  return cropInventoryCount(inventory, 'SEED', cropDefinition(cropId)) > 0
 }
 
-function optimisticInventoryDelta(method: string, plot?: FarmSnapshot['plots'][number]) {
-  if (method === 'farm.Plant') return { itemType: 'SEED', itemId: '1', quantity: -1 }
-  if (method === 'farm.Harvest') return { itemType: 'CROP', itemId: '1', quantity: plot?.remaining_yield ?? plot?.yield ?? 5 }
-  if (method === 'farm.StealCrop') return { itemType: 'CROP', itemId: '1', quantity: 1 }
+function optimisticInventoryDelta(method: string, plot?: FarmSnapshot['plots'][number], body: Record<string, unknown> = {}) {
+  const crop = cropDefinition(method === 'farm.Plant' ? String(body.seed_item_id ?? 'WHEAT') : plot?.crop_id)
+  if (method === 'farm.Plant') return { itemType: 'SEED', itemId: crop.itemId, quantity: -1 }
+  if (method === 'farm.Harvest') return { itemType: 'CROP', itemId: crop.itemId, quantity: plot?.remaining_yield ?? plot?.yield ?? crop.harvestYield }
+  if (method === 'farm.StealCrop') return { itemType: 'CROP', itemId: crop.itemId, quantity: 1 }
   return undefined
 }
 

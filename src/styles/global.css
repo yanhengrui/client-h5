@@ -67,6 +67,8 @@ button:disabled { opacity: .52; cursor: not-allowed; }
 .plot.selected { outline: 5px solid #f7de75; outline-offset: 4px; transform: translateY(-3px); }
 .plot .furrows { position: absolute; inset: 14px; border-radius: 50%; background: repeating-linear-gradient(90deg, transparent 0 15%, #623f292c 16% 20%); }
 .plot .crop { position: relative; z-index: 1; display: block; font-size: clamp(34px, 5vw, 54px); filter: drop-shadow(0 5px 2px #54351f38); }
+.plot.crop-carrot .crop { filter: drop-shadow(0 5px 2px #7d3f2338) saturate(1.08); }
+.plot.crop-tomato .crop { filter: drop-shadow(0 5px 2px #7a302f3d) saturate(1.1); }
 .plot.mature .crop { animation: sway 1.6s ease-in-out infinite alternate; }
 .plot.syncing .crop { animation: action-pop .32s cubic-bezier(.2,.9,.35,1.25); }
 .plot.syncing::after { content: '✦'; position: absolute; z-index: 3; top: 10px; right: 15px; color: #fff6a9; font-size: 18px; pointer-events: none; animation: action-spark .55s ease-out both; }
@@ -119,7 +121,13 @@ button:disabled { opacity: .52; cursor: not-allowed; }
 .panel-title p:last-child { color: #8a755e; font-size: 13px; }
 .product { display: flex; gap: 20px; align-items: center; padding: 24px; background: #f2e7ca; border: 2px solid #ad9068; border-radius: 20px; }
 .product-art { display: grid; place-items: center; width: 110px; height: 110px; flex: none; border-radius: 50%; background: #d9edae; font-size: 58px; }
+.crop-product.crop-carrot { background: #f7e5c7; }.crop-product.crop-carrot .product-art { background: #f4cf99; }
+.crop-product.crop-tomato { background: #f5dfd0; }.crop-product.crop-tomato .product-art { background: #efc2ad; }
 .product h3, .product p { margin: 4px 0; }
+.crop-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0 18px; }
+.crop-picker button { display: grid; place-items: center; min-width: 0; padding: 9px 5px; border: 1.5px solid #b99a70; border-radius: 15px; background: #fffaf0; color: #60482f; cursor: pointer; box-shadow: 0 3px 0 #8b69462b; }
+.crop-picker button:hover { transform: translateY(-1px); }.crop-picker button.active { border-color: #668b4d; background: #edf3d8; box-shadow: inset 0 -4px 0 #668b4d1f; }
+.crop-picker span { font-size: 26px; line-height: 1.1; }.crop-picker b { margin-top: 4px; font-size: 11px; }.crop-picker small { margin-top: 2px; color: #8a765f; font-size: 9px; }
 .price { margin-top: 12px; font-weight: 800; }
 .quantity-picker { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; margin-top: 18px; padding: 14px 16px; border: 1px dashed #c8aa7d; border-radius: 14px; background: #fffaf0; }
 .quantity-picker > span { font-weight: 800; }

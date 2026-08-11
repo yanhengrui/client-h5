@@ -1,4 +1,4 @@
-import type { AckFrame, ClientFrame, CommandFrame, EventFrame, PlotPatch, ServerFrame, SubscribeFarmFrame } from './frame-contract'
+import type { AckFrame, ClientFrame, CommandFrame, EventFrame, HandoffFrame, PlotPatch, ServerFrame, SubscribeFarmFrame } from './frame-contract'
 import { parseServerFrame } from './frame-contract'
 import { createUuidV7 } from '../shared/uuid-v7'
 
@@ -28,6 +28,7 @@ export class FarmSocket {
   private manuallyClosed = false
   private clientSeq = 0
   private token = ''
+  private handoffRetryAfterMs = 0
 
   constructor(private readonly callbacks: SocketCallbacks) {}
 
@@ -65,7 +66,8 @@ export class FarmSocket {
       }
       this.logFrame('in', frame)
       if (frame.meta.type === 'ACK') this.callbacks.onAck(frame as AckFrame)
-      else this.callbacks.onEvent(frame as EventFrame)
+      else if (frame.meta.type === 'EVENT') this.callbacks.onEvent(frame as EventFrame)
+      else this.handleHandoff(frame as HandoffFrame)
     }
     socket.onerror = () => {
       if (this.socket === socket) this.log('system', 'ERROR', 'WebSocket 连接异常')
@@ -74,7 +76,11 @@ export class FarmSocket {
       if (this.socket !== socket) return
       this.callbacks.onPhase('closed')
       this.log('system', `CLOSE ${event.code}`, event.reason || '连接关闭')
-      if (!this.manuallyClosed && event.code !== 4005) this.scheduleReconnect()
+      if (!this.manuallyClosed && event.code !== 4005) {
+        const retryAfterMs = this.handoffRetryAfterMs
+        this.handoffRetryAfterMs = 0
+        this.scheduleReconnect(retryAfterMs)
+      }
     }
   }
 
@@ -126,9 +132,14 @@ export class FarmSocket {
     return cmdId
   }
 
-  private scheduleReconnect() {
+  private handleHandoff(frame: HandoffFrame) {
+    this.handoffRetryAfterMs = Math.max(0, Number(frame.body.retry_after_ms ?? 0))
+    this.log('system', 'HANDOFF', frame.body.reason || '服务器正在平滑更新，等待重连')
+  }
+
+  private scheduleReconnect(minimumDelayMs = 0) {
     const delay = delays[Math.min(this.attempts, delays.length - 1)]
-    const jittered = Math.round(delay * (0.8 + Math.random() * 0.4))
+    const jittered = Math.max(minimumDelayMs, Math.round(delay * (0.8 + Math.random() * 0.4)))
     this.attempts += 1
     this.callbacks.onPhase('backoff')
     this.reconnectTimer = window.setTimeout(() => this.connect(this.token), jittered)

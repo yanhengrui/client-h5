@@ -168,18 +168,18 @@ export class ApiClient {
   catalog() {
     return this.request<{ unlocks: CatalogUnlock[] }>('/api/v1/catalog/list')
   }
-  purchase(quantity = 1) {
+  purchase(cropId = 'WHEAT', quantity = 1) {
     return this.request<{ event_id: string; coin_balance: number }>('/api/v1/shop/purchase', {
       method: 'POST',
       headers: { 'Idempotency-Key': createUuidV7() },
-      body: JSON.stringify({ crop_id: 'WHEAT', quantity }),
+      body: JSON.stringify({ crop_id: cropId, quantity }),
     })
   }
-  sell(quantity = 1) {
+  sell(cropId = 'WHEAT', quantity = 1) {
     return this.request<{ event_id: string; coin_balance: number }>('/api/v1/farm/sell', {
       method: 'POST',
       headers: { 'Idempotency-Key': createUuidV7() },
-      body: JSON.stringify({ crop_id: 'WHEAT', quantity }),
+      body: JSON.stringify({ crop_id: cropId, quantity }),
     })
   }
   friends() {
@@ -190,6 +190,23 @@ export class ApiClient {
   }
   acceptInvite(inviteCode: string) {
     return this.request<{ ok: boolean }>('/api/v1/social/invite/accept', { method: 'POST', body: JSON.stringify({ invite_code: inviteCode }) })
+  }
+  async acceptInviteAndWait(inviteCode: string, knownFriendIds: Iterable<string>, attempts = 7) {
+    const known = new Set(Array.from(knownFriendIds, String))
+    await this.acceptInvite(inviteCode)
+
+    let latest: FriendsResponse = { friends: [] }
+    for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+      if (attempt > 0) {
+        const delayMs = Math.min(100 * 2 ** (attempt - 1), 1600)
+        await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs))
+      }
+      latest = await this.friends()
+      if (latest.friends.some((friend) => !known.has(friend.user_id))) {
+        return { confirmed: true, friends: latest.friends }
+      }
+    }
+    return { confirmed: false, friends: latest.friends }
   }
   mails() {
     return this.request<{ mails: Mail[] }>('/api/v1/mail/list?limit=20')

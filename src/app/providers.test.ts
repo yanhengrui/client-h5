@@ -16,10 +16,21 @@ describe('optimisticPlotPatch', () => {
     })
   })
 
+  it('uses the selected vegetable growth time and yield', () => {
+    const now = Date.parse('2026-08-04T08:00:00.000Z')
+    expect(optimisticPlotPatch('farm.Plant', 4, { seed_item_id: 'CARROT' }, now)).toMatchObject({
+      crop_id: 'CARROT',
+      mature_at: '2026-08-04T08:20:00.000Z',
+      remaining_yield: 6,
+    })
+  })
+
   it('blocks optimistic planting when the authoritative seed inventory is empty', () => {
     expect(hasCommandInventory('farm.Plant', [])).toBe(false)
-    expect(hasCommandInventory('farm.Plant', [{ item_type: 'SEED', quantity: 0 }])).toBe(false)
-    expect(hasCommandInventory('farm.Plant', [{ item_type: 'SEED', quantity: 1 }])).toBe(true)
+    expect(hasCommandInventory('farm.Plant', [{ item_type: 'SEED', item_id: '1', quantity: 0 }])).toBe(false)
+    expect(hasCommandInventory('farm.Plant', [{ item_type: 'SEED', item_id: '1', quantity: 1 }])).toBe(true)
+    expect(hasCommandInventory('farm.Plant', [{ item_type: 'SEED', item_id: '1', quantity: 2 }], 'CARROT')).toBe(false)
+    expect(hasCommandInventory('farm.Plant', [{ item_type: 'SEED', item_id: '2', quantity: 1 }], 'CARROT')).toBe(true)
     expect(hasCommandInventory('farm.Harvest', [])).toBe(true)
   })
 })

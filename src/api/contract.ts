@@ -96,7 +96,12 @@ export type Task = {
 
 export type ApiErrorBody = { code?: string; message?: string; reason?: string; retry_after_ms?: number }
 
-const asID = (value: unknown): string => String(value ?? '')
+const asID = (value: unknown): string => {
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+    throw new Error('服务端返回了超出 JavaScript 安全范围的数字 ID')
+  }
+  return String(value ?? '')
+}
 export function normalizeSnapshot(raw: FarmSnapshot): FarmSnapshot {
   const ownerUserId = asID(raw.owner_user_id)
   return {

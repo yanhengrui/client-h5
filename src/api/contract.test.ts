@@ -64,4 +64,10 @@ describe('display name contracts', () => {
       { user_id: '121342', display_name: '121342' },
     ])
   })
+
+  it('rejects an unsafe numeric id before it can point at another farm', () => {
+    expect(() => normalizeFriendsResponse({
+      friends: [{ user_id: 80500742443532289 as unknown as string, display_name: 'henry' }],
+    })).toThrow('超出 JavaScript 安全范围')
+  })
 })

@@ -6,6 +6,7 @@ import type { EventFrame } from '../realtime/frame-contract'
 export type PetHarvestCue = {
   eventId: string
   plotId: number
+  cropId?: string
 }
 
 type DetectionInput = {
@@ -27,7 +28,7 @@ export function detectPetHarvest(input: DetectionInput): PetHarvestCue | null {
 
   const previousPlot = farm.plots.find((plot) => plot.plot_id === patch.plot_id)
   if (!previousPlot || withEffectiveGrowthStage(previousPlot, nowMs).growth_stage !== 'MATURE') return null
-  return { eventId: frame.body.event_id, plotId: patch.plot_id }
+  return { eventId: frame.body.event_id, plotId: patch.plot_id, cropId: previousPlot.crop_id }
 }
 
 type SnapshotDetectionInput = {
@@ -59,5 +60,6 @@ export function detectPetHarvestsFromSnapshot(input: SnapshotDetectionInput): Pe
     .map((plot) => ({
       eventId: `pet-reconcile:${snapshot.farm_id}:${snapshot.version}:${plot.plot_id}`,
       plotId: plot.plot_id,
+      cropId: plot.crop_id,
     }))
 }
