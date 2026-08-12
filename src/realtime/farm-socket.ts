@@ -148,7 +148,7 @@ export class FarmSocket {
   }
 
   private log(direction: WsLog['direction'], type: string, detail: string) {
-    this.callbacks.onLog({ id: crypto.randomUUID(), at: new Date().toISOString(), direction, type, detail })
+    this.callbacks.onLog({ id: createUuidV7(), at: new Date().toISOString(), direction, type, detail })
   }
 
   private logFrame(direction: 'in' | 'out', frame: ServerFrame | ClientFrame) {

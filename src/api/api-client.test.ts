@@ -9,7 +9,7 @@ describe('ApiClient GET coalescing', () => {
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { release = resolve }))
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('window', { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout })
-    vi.stubGlobal('crypto', { randomUUID: () => 'http-log-id' })
+    vi.stubGlobal('crypto', { getRandomValues: (values: Uint8Array) => values.fill(1) })
 
     const client = new ApiClient('', () => undefined, () => undefined)
     const first = client.friends()
@@ -33,7 +33,7 @@ describe('ApiClient mailbox summary', () => {
 
   it('loads only the authoritative unread badge state', async () => {
     vi.stubGlobal('window', { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout })
-    vi.stubGlobal('crypto', { randomUUID: () => 'http-log-id' })
+    vi.stubGlobal('crypto', { getRandomValues: (values: Uint8Array) => values.fill(1) })
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       unread_count: 5,
       mailbox_version: 12,
@@ -51,7 +51,7 @@ describe('ApiClient password authentication', () => {
 
   it('registers a local account and revokes the server session on logout', async () => {
     vi.stubGlobal('window', { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout })
-    vi.stubGlobal('crypto', { randomUUID: () => 'http-log-id' })
+    vi.stubGlobal('crypto', { getRandomValues: (values: Uint8Array) => values.fill(1) })
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         access_token: 'access-1', refresh_token: 'refresh-1', session_id: 'session-1',

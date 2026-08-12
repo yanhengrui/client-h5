@@ -106,7 +106,7 @@ export class ApiClient {
     } finally {
       window.clearTimeout(timeout)
       this.onLog({
-        id: crypto.randomUUID(),
+        id: createUuidV7(),
         at: new Date().toISOString(),
         method,
         path,

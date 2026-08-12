@@ -69,21 +69,16 @@ function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
-  const [name, setName] = useState(() => localStorage.getItem('farm.profile-name.v1') ?? '')
   const [formError, setFormError] = useState('')
 
   const enter = async () => {
     const normalizedUsername = username.trim().toLowerCase()
     if (!/^[a-z0-9_]{4,32}$/.test(normalizedUsername)) {
-      setFormError('用户名需要 4–32 位，只能使用英文、数字和下划线')
+      setFormError('农场名需要 4–32 位，只能使用英文、数字和下划线')
       return
     }
     if (password.length < 8 || password.length > 128) {
-      setFormError('密码需要 8–128 个字符')
-      return
-    }
-    if (mode === 'register' && (name.trim().length < 2 || name.trim().length > 12)) {
-      setFormError('农场昵称需要 2–12 个字符')
+      setFormError('密码至少 8 个字符')
       return
     }
     if (mode === 'register' && password !== confirmPassword) {
@@ -94,7 +89,7 @@ function LoginPage() {
     setPending(true)
     try {
       const session = mode === 'register'
-        ? await register(normalizedUsername, password, name.trim())
+        ? await register(normalizedUsername, password, normalizedUsername)
         : await login(normalizedUsername, password)
       navigate(`/u/${session.userId}/farm`)
     } catch (error) {
@@ -113,15 +108,14 @@ function LoginPage() {
         <p className="login-copy">播下四季的种子，收获属于你的田园时光。</p>
         <div className="login-crops" aria-hidden="true"><span>🌾</span><span>🥕</span><span>🍅</span></div>
         <div className="auth-tabs"><button className={mode === 'login' ? 'active' : ''} onClick={() => switchMode('login')}>登录</button><button className={mode === 'register' ? 'active' : ''} onClick={() => switchMode('register')}>注册新农场</button></div>
-        <label className="field-label" htmlFor="username">用户名</label>
+        <label className="field-label" htmlFor="username">农场名</label>
         <input id="username" value={username} maxLength={32} autoComplete="username" placeholder="英文、数字或下划线" onChange={(e) => { setUsername(e.target.value); setFormError('') }} />
-        {mode === 'register' && <><label className="field-label" htmlFor="farmer-name">农场昵称</label><input id="farmer-name" value={name} maxLength={12} autoComplete="nickname" placeholder="游戏内展示的名字" onChange={(e) => { setName(e.target.value); setFormError('') }} /></>}
         <label className="field-label" htmlFor="password">密码</label>
         <input id="password" type="password" value={password} maxLength={128} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} placeholder="至少 8 个字符" onChange={(e) => { setPassword(e.target.value); setFormError('') }} onKeyDown={(e) => { if (e.key === 'Enter' && mode === 'login') void enter() }} />
         {mode === 'register' && <><label className="field-label" htmlFor="confirm-password">确认密码</label><input id="confirm-password" type="password" value={confirmPassword} maxLength={128} autoComplete="new-password" placeholder="再次输入密码" onChange={(e) => { setConfirmPassword(e.target.value); setFormError('') }} onKeyDown={(e) => { if (e.key === 'Enter') void enter() }} /></>}
         {formError && <p className="field-error" role="alert">{formError}</p>}
         <button className="primary big" onClick={enter} disabled={pending}>{pending ? '正在连接农场…' : mode === 'login' ? '登录并进入农场' : '注册并创建农场'}</button>
-        <small>{mode === 'login' ? '使用注册时设置的用户名和密码继续经营。' : '用户名用于登录，农场昵称用于游戏内展示。'}</small>
+        <small>{mode === 'login' ? '使用农场名和密码继续经营。' : '农场名将同时用于登录和游戏内展示。'}</small>
       </section>
       <div className="login-hills" aria-hidden="true"><span>🌳</span><span>🏡</span><span>🌲</span></div>
     </main>

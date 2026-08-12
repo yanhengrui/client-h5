@@ -5,6 +5,7 @@ import { errorMessage, withEffectiveGrowthStage } from '../api/contract'
 import { FarmSocket } from '../realtime/farm-socket'
 import type { AckFrame, EventFrame, MailboxChangedFrame, PlotPatch } from '../realtime/frame-contract'
 import { appReducer, initialState, type AppState } from '../state/app-state'
+import { createUuidV7 } from '../shared/uuid-v7'
 import { detectPetHarvest, detectPetHarvestsFromSnapshot, type PetHarvestCue } from './pet-animation'
 import { cropDefinition, cropInventoryCount, type CropId } from './crops'
 
@@ -145,7 +146,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const notify = useCallback((text: string, tone: 'success' | 'error' | 'info' = 'info') => {
-    const id = crypto.randomUUID()
+    const id = createUuidV7()
     dispatch({ type: 'notice', notice: { id, text, tone } })
     window.setTimeout(() => {
       if (stateRef.current.notice?.id === id) dispatch({ type: 'notice', notice: null })
