@@ -116,6 +116,13 @@ describe('appReducer authority rules', () => {
     expect(pending.farm?.version).toBe('7')
   })
 
+  it('clears unresolved commands when the transport disconnects', () => {
+    const loaded = appReducer(initialState, { type: 'snapshot', snapshot })
+    const pending = appReducer(loaded, { type: 'pendingAdd', cmdId: 'cmd-1', plotId: 0, clientSeq: 1 })
+    expect(Object.keys(pending.pending)).toEqual(['cmd-1'])
+    expect(appReducer(pending, { type: 'pendingClear' }).pending).toEqual({})
+  })
+
   it('optimistically changes the economy and then confirms the server balance', () => {
     const farmLoaded = appReducer(initialState, { type: 'snapshot', snapshot })
     const loaded = appReducer(farmLoaded, { type: 'playerEconomy', assets: { coin_balance: 990, inventory: [] } })

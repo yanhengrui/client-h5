@@ -18,6 +18,8 @@ type SocketCallbacks = {
   onMailboxChanged: (frame: MailboxChangedFrame) => void
   onLog: (log: WsLog) => void
   onOpen: () => void
+  resolveReconnectToken?: (forceRefresh: boolean) => Promise<string>
+  onReconnectBlocked?: (error: unknown) => void
 }
 
 const delays = [250, 500, 1000, 2000, 5000]
@@ -30,6 +32,7 @@ export class FarmSocket {
   private clientSeq = 0
   private token = ''
   private handoffRetryAfterMs = 0
+  private reconnectGeneration = 0
 
   constructor(private readonly callbacks: SocketCallbacks) {}
 
@@ -39,6 +42,7 @@ export class FarmSocket {
   connect(token: string) {
     this.token = token
     this.manuallyClosed = false
+    this.reconnectGeneration += 1
     window.clearTimeout(this.reconnectTimer)
     if (this.socket) {
       this.socket.onopen = null
@@ -78,16 +82,19 @@ export class FarmSocket {
       if (this.socket !== socket) return
       this.callbacks.onPhase('closed')
       this.log('system', `CLOSE ${event.code}`, event.reason || '连接关闭')
-      if (!this.manuallyClosed && event.code !== 4005) {
+      if (!this.manuallyClosed && event.code !== 4001 && event.code !== 4005) {
         const retryAfterMs = this.handoffRetryAfterMs
         this.handoffRetryAfterMs = 0
-        this.scheduleReconnect(retryAfterMs)
+        this.scheduleReconnect(retryAfterMs, event.code === 4002)
+      } else if (event.code === 4001) {
+        this.callbacks.onReconnectBlocked?.(new Error('登录凭据无效，请重新登录'))
       }
     }
   }
 
   disconnect() {
     this.manuallyClosed = true
+    this.reconnectGeneration += 1
     window.clearTimeout(this.reconnectTimer)
     if (this.socket) {
       this.socket.onclose = null
@@ -100,7 +107,8 @@ export class FarmSocket {
   reconnect() {
     this.disconnect()
     this.manuallyClosed = false
-    this.connect(this.token)
+    const generation = this.reconnectGeneration
+    void this.reconnectWithLatestToken(generation)
   }
 
   command(method: string, farmId: string, baseVersion: string, body: Record<string, unknown>): string {
@@ -139,12 +147,30 @@ export class FarmSocket {
     this.log('system', 'HANDOFF', frame.body.reason || '服务器正在平滑更新，等待重连')
   }
 
-  private scheduleReconnect(minimumDelayMs = 0) {
+  private scheduleReconnect(minimumDelayMs = 0, forceTokenRefresh = false) {
     const delay = delays[Math.min(this.attempts, delays.length - 1)]
     const jittered = Math.max(minimumDelayMs, Math.round(delay * (0.8 + Math.random() * 0.4)))
     this.attempts += 1
     this.callbacks.onPhase('backoff')
-    this.reconnectTimer = window.setTimeout(() => this.connect(this.token), jittered)
+    const generation = this.reconnectGeneration
+    this.reconnectTimer = window.setTimeout(() => {
+      void this.reconnectWithLatestToken(generation, forceTokenRefresh)
+    }, jittered)
+  }
+
+  private async reconnectWithLatestToken(generation: number, forceTokenRefresh = false) {
+    if (this.manuallyClosed || generation !== this.reconnectGeneration) return
+    try {
+      const token = this.callbacks.resolveReconnectToken
+        ? await this.callbacks.resolveReconnectToken(forceTokenRefresh)
+        : this.token
+      if (this.manuallyClosed || generation !== this.reconnectGeneration) return
+      this.connect(token)
+    } catch (error) {
+      this.log('system', 'AUTH', '登录会话已失效，停止自动重连')
+      this.callbacks.onPhase('closed')
+      this.callbacks.onReconnectBlocked?.(error)
+    }
   }
 
   private log(direction: WsLog['direction'], type: string, detail: string) {

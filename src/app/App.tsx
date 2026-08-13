@@ -1,14 +1,17 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
+import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import type { CatalogUnlock, Friend, InventoryItem, Mail, PlotView, Task } from '../api/contract'
 import { ApiError, type HttpLog } from '../api/api-client'
 import { errorMessage, withEffectiveGrowthStage } from '../api/contract'
+import { farmAudio, type AudioPreferences, type FarmSound } from '../audio/farm-audio'
 import type { WsLog } from '../realtime/farm-socket'
 import { countdownSeconds } from './countdown'
+import { buildInvitePath, buildInviteUrl, normalizeInviteCode, PENDING_INVITE_CODE_KEY, postAuthPath, safeInternalPath } from './invite-flow'
 import { useApp } from './providers'
-import { CROPS, cropDefinition, cropInventoryCount, cropStageArt, findCropDefinition, type CropId } from './crops'
+import { CROPS, cropDefinition, cropInventoryCount, cropMatureAsset, cropSeedAsset, cropStageAsset, EMPTY_PLOT_ASSET, findCropDefinition, type CropDefinition, type CropId } from './crops'
 
 type Panel = 'tasks' | 'mail' | 'friends' | 'catalog' | 'shop' | 'pet' | 'debug' | null
+type FarmTool = 'inspect' | 'plant' | 'water' | 'harvest'
 
 const panelCache = new Map<string, unknown>()
 
@@ -43,7 +46,7 @@ export function App() {
   const ownFarmPath = state.session ? `/u/${state.session.userId}/farm` : '/login'
   return (
     <Routes>
-      <Route path="/login" element={state.session ? <Navigate to={ownFarmPath} replace /> : <LoginPage />} />
+      <Route path="/login" element={<LoginRoute />} />
       <Route path="/invite" element={<InvitePage />} />
       <Route path="/farm" element={<Navigate to={ownFarmPath} replace />} />
       <Route path="/u/:userId/farm" element={state.session ? <OwnFarmRoute /> : <Navigate to="/login" replace />} />
@@ -51,6 +54,30 @@ export function App() {
       <Route path="*" element={<Navigate to={ownFarmPath} replace />} />
     </Routes>
   )
+}
+
+function pendingInviteCode() {
+  try {
+    return normalizeInviteCode(sessionStorage.getItem(PENDING_INVITE_CODE_KEY) ?? '')
+  } catch {
+    return ''
+  }
+}
+
+function savePendingInviteCode(code: string) {
+  try { sessionStorage.setItem(PENDING_INVITE_CODE_KEY, code) } catch { /* storage may be unavailable */ }
+}
+
+function clearPendingInviteCode() {
+  try { sessionStorage.removeItem(PENDING_INVITE_CODE_KEY) } catch { /* storage may be unavailable */ }
+}
+
+function LoginRoute() {
+  const { state } = useApp()
+  const [params] = useSearchParams()
+  if (!state.session) return <LoginPage />
+  const ownFarmPath = `/u/${state.session.userId}/farm`
+  return <Navigate to={postAuthPath(pendingInviteCode(), params.get('redirect'), ownFarmPath)} replace />
 }
 
 function OwnFarmRoute() {
@@ -64,6 +91,7 @@ function OwnFarmRoute() {
 function LoginPage() {
   const { login, register } = useApp()
   const navigate = useNavigate()
+  const [params] = useSearchParams()
   const [pending, setPending] = useState(false)
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [username, setUsername] = useState('')
@@ -91,7 +119,7 @@ function LoginPage() {
       const session = mode === 'register'
         ? await register(normalizedUsername, password, normalizedUsername)
         : await login(normalizedUsername, password)
-      navigate(`/u/${session.userId}/farm`)
+      navigate(postAuthPath(pendingInviteCode(), params.get('redirect'), `/u/${session.userId}/farm`), { replace: true })
     } catch (error) {
       const apiError = error as ApiError
       setFormError(errorMessage(apiError.code, apiError.message))
@@ -101,12 +129,14 @@ function LoginPage() {
   return (
     <main className="login-page">
       <div className="sun" />
+      <div className="login-clouds" aria-hidden="true"><i /><i /><i /></div>
+      <div className="login-audio"><AudioControls /></div>
       <section className="login-card">
-        <div className="brand-mark" aria-hidden="true">🌾</div>
+        <div className="brand-mark" aria-hidden="true"><img src={cropMatureAsset(CROPS[0])} alt="" /></div>
         <p className="eyebrow">WELCOME HOME</p>
         <h1>麦穗农场</h1>
         <p className="login-copy">播下四季的种子，收获属于你的田园时光。</p>
-        <div className="login-crops" aria-hidden="true"><span>🌾</span><span>🥕</span><span>🍅</span></div>
+        <div className="login-crops" aria-hidden="true">{CROPS.map((crop) => <span key={crop.id}><CropArtwork crop={crop} /></span>)}</div>
         <div className="auth-tabs"><button className={mode === 'login' ? 'active' : ''} onClick={() => switchMode('login')}>登录</button><button className={mode === 'register' ? 'active' : ''} onClick={() => switchMode('register')}>注册新农场</button></div>
         <label className="field-label" htmlFor="username">农场名</label>
         <input id="username" value={username} maxLength={32} autoComplete="username" placeholder="英文、数字或下划线" onChange={(e) => { setUsername(e.target.value); setFormError('') }} />
@@ -127,23 +157,39 @@ function InvitePage() {
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const [status, setStatus] = useState('准备接受邀请…')
-  const code = params.get('code') ?? ''
+  const processingCodeRef = useRef('')
+  const queryCode = normalizeInviteCode(params.get('code') ?? '')
+  const code = queryCode || pendingInviteCode()
   useEffect(() => {
     let active = true
     void (async () => {
       try {
         if (!code) throw new Error('邀请链接缺少 code')
+        if (processingCodeRef.current === code) return
+        processingCodeRef.current = code
         const session = state.session
-        if (!session) { setStatus('请先登录，再重新打开邀请链接'); return }
+        savePendingInviteCode(code)
+        if (!session) {
+          setStatus('请先登录，登录后将自动接受邀请…')
+          const redirect = buildInvitePath(code)
+          navigate(`/login?redirect=${encodeURIComponent(redirect)}`, { replace: true })
+          return
+        }
         setStatus('正在加入好友农场…')
         const before = await api.friends()
         setStatus('正在确认跨分片好友关系…')
         const result = await api.acceptInviteAndWait(code, before.friends.map((friend) => friend.user_id))
         if (active) {
+          clearPendingInviteCode()
           notify(result.confirmed ? '已成为好友' : '邀请已接受，好友关系仍在同步', result.confirmed ? 'success' : 'info')
-          navigate(`/u/${session.userId}/farm`, { replace: true })
+          if (result.confirmed && result.friend) {
+            navigate(`/farm/${result.friend.user_id}`, { replace: true, state: { friendDisplayName: result.friend.display_name } })
+          } else {
+            navigate(`/u/${session.userId}/farm`, { replace: true })
+          }
         }
       } catch (error) {
+        processingCodeRef.current = ''
         if (active) setStatus(error instanceof Error ? error.message : '邀请处理失败')
       }
     })()
@@ -161,11 +207,18 @@ function FarmPage() {
     ? location.state.friendDisplayName.trim()
     : ''
   const fieldRef = useRef<HTMLElement>(null)
+  const toolCursorRef = useRef<HTMLDivElement>(null)
+  const fieldPointerRef = useRef<{ clientX: number; clientY: number; pointerType: string } | null>(null)
+  const pointerInsideFieldRef = useRef(false)
   const [selected, setSelected] = useState<number | null>(null)
+  const [equippedTool, setEquippedTool] = useState<FarmTool>('inspect')
+  const [toolCursorVisible, setToolCursorVisible] = useState(false)
+  const [toolDragging, setToolDragging] = useState(false)
   const [panel, setPanel] = useState<Panel>(null)
   const [now, setNow] = useState(Date.now())
   const [ghostPlotId, setGhostPlotId] = useState<number | null>(null)
   const [selectedCropId, setSelectedCropId] = useState<CropId>('WHEAT')
+  const [actionFx, setActionFx] = useState<{ plotId: number; sound: FarmSound } | null>(null)
   const isFriend = Boolean(farmId)
   const farm = state.farm
   const petHarvest = isFriend ? undefined : petHarvests[0]
@@ -191,60 +244,90 @@ function FarmPage() {
   }, [farm?.plots, now])
   if (!farm) return <main className="center-page"><div className="paper-card"><div className="spinner" /><h2>正在整理田地…</h2></div></main>
   const selectedPlot = displayPlots.find((plot) => plot.plot_id === selected) ?? displayPlots[0]
-  const selectedOrdinal = Math.max(1, displayPlots.findIndex((plot) => plot.plot_id === selectedPlot?.plot_id) + 1)
-  const busy = Object.values(state.pending).includes(selectedPlot?.plot_id ?? -1)
   const subscriptionPhase = state.farmSubscription.farmId === farm.farm_id ? state.farmSubscription.phase : 'idle'
   const viewerFull = isFriend && subscriptionPhase === 'full'
   const connected = state.socketPhase === 'open' && farm.sync === 'synced' && subscriptionPhase === 'live'
   const selectedCrop = cropDefinition(selectedCropId)
-  const action = actionFor(selectedPlot, isFriend, selectedCrop)
-  const currentYield = plotYield(selectedPlot)
   const playerEconomy = state.playerEconomy
-  const seedCount = cropInventoryCount(playerEconomy?.inventory ?? [], 'SEED', selectedCrop)
-  const needsSeed = action?.method === 'farm.Plant' && seedCount <= 0
   const farmDisplayName = isFriend
     ? visitDisplayName || farm.owner_display_name
     : farm.owner_display_name?.trim() || state.session?.displayName?.trim()
-  const perform = () => {
-    if (!selectedPlot || !action) return
-    if (needsSeed) {
-      notify('仓库里没有种子，先去补充一袋吧', 'info')
-      setPanel('shop')
+  const performOnPlot = (plot: PlotView) => {
+    setSelected(plot.plot_id)
+    if (equippedTool === 'inspect') {
+      farmAudio.play('select')
       return
     }
-    farmCommand(action.method, selectedPlot.plot_id, action.method === 'farm.Plant' ? { seed_item_id: selectedCrop.id } : {})
+    const action = toolActionFor(plot, equippedTool, isFriend, selectedCrop)
+    if (!action) {
+      farmAudio.play('error')
+      notify(toolMismatchMessage(equippedTool, plot, isFriend), 'info')
+      return
+    }
+    if (!connected) {
+      notify('农场正在重新连接，请稍后再操作', 'info')
+      return
+    }
+    if (Object.values(state.pending).includes(plot.plot_id)) return
+    const seedCount = cropInventoryCount(playerEconomy?.inventory ?? [], 'SEED', selectedCrop)
+    if (action.method === 'farm.Plant' && seedCount <= 0) {
+      notify('仓库里没有种子，先去补充一袋吧', 'info')
+      openPanel('shop')
+      return
+    }
+    const sound = actionSound(action.method)
+    farmAudio.play(sound)
+    setActionFx({ plotId: plot.plot_id, sound })
+    window.setTimeout(() => setActionFx((current) => current?.plotId === plot.plot_id ? null : current), 850)
+    farmCommand(action.method, plot.plot_id, action.method === 'farm.Plant' ? { seed_item_id: selectedCrop.id } : {})
+  }
+  const openPanel = (next: Exclude<Panel, null>) => {
+    farmAudio.play('open')
+    setPanel(next)
+  }
+  const equipTool = (tool: FarmTool, cropId?: CropId) => {
+    if (cropId) setSelectedCropId(cropId)
+    setEquippedTool(tool)
+    const pointer = fieldPointerRef.current
+    const shouldShowCursor = tool !== 'inspect' && pointerInsideFieldRef.current && pointer?.pointerType !== 'touch'
+    setToolCursorVisible(shouldShowCursor)
+    if (shouldShowCursor && pointer) positionToolCursor(pointer.clientX, pointer.clientY)
+    farmAudio.play('select')
+  }
+  const positionToolCursor = (clientX: number, clientY: number) => {
+    const bounds = fieldRef.current?.getBoundingClientRect()
+    if (!bounds) return
+    toolCursorRef.current?.style.setProperty('transform', `translate3d(${clientX - bounds.left}px, ${clientY - bounds.top}px, 0)`)
+  }
+  const trackToolCursor = (event: ReactPointerEvent<HTMLElement>) => {
+    fieldPointerRef.current = { clientX: event.clientX, clientY: event.clientY, pointerType: event.pointerType }
+    pointerInsideFieldRef.current = true
+    positionToolCursor(event.clientX, event.clientY)
+    if (event.pointerType !== 'touch' && equippedTool !== 'inspect') setToolCursorVisible(true)
+  }
+  const leaveToolCursor = () => {
+    pointerInsideFieldRef.current = false
+    setToolCursorVisible(false)
   }
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <button className="logo-button" onClick={() => navigate(`/u/${state.session?.userId}/farm`)}><span>🌾</span><strong>麦穗农场</strong></button>
-        <div className="status-cluster">
-          <span className="coin-pill">🪙 <b>{playerEconomy?.coin_balance ?? '—'}</b></span>
-          <span className={`connection ${viewerFull ? 'full' : state.socketPhase}`}><i /> {viewerFull ? '只读快照' : subscriptionPhase === 'subscribing' ? '正在加入' : phaseLabel(state.socketPhase)}</span>
-          <span className="version">版本 {farm.version}</span>
-          <span className="version">农场主 {farmDisplayName || `#${farm.owner_user_id}`}</span>
+      <div className="farm-atmosphere" aria-hidden="true"><i className="cloud cloud-a" /><i className="cloud cloud-b" /><i className="cloud cloud-c" /><span className="distant-hill hill-a" /><span className="distant-hill hill-b" /></div>
+      <header className="game-hud">
+        <button className="player-plaque" onClick={() => navigate(`/u/${state.session?.userId}/farm`)}>
+          <span className="player-avatar"><img src={cropMatureAsset(CROPS[0])} alt="" /></span>
+          <span><small>{isFriend ? '正在拜访' : '我的农场'}</small><strong>{farmDisplayName || '农场主'}</strong></span>
+        </button>
+        <div className="hud-resources">
+          <span className="resource-pill coin-resource"><i>●</i><small>金币</small><b>{playerEconomy?.coin_balance ?? '—'}</b></span>
+          <span className={`resource-pill connection-resource ${viewerFull ? 'full' : state.socketPhase}`}><i /><small>农场状态</small><b>{viewerFull ? '只读参观' : subscriptionPhase === 'subscribing' ? '进入中' : phaseLabel(state.socketPhase)}</b></span>
+          <span className="resource-pill ambience-resource"><i>☀</i><small>田园时光</small><b>晨光正好</b></span>
         </div>
-        <nav>
-          <button onClick={() => setPanel('tasks')}>📒 <span>任务</span></button>
-          <button className="mail-nav-button" onClick={() => setPanel('mail')}>
-            ✉️ <span>邮件</span>
-            {(state.mailboxSummary?.unread_count ?? 0) > 0 && (
-              <b className="mail-unread-badge" aria-label={`${state.mailboxSummary?.unread_count} 封未读邮件`}>
-                {(state.mailboxSummary?.unread_count ?? 0) > 99 ? '99+' : state.mailboxSummary?.unread_count}
-              </b>
-            )}
-          </button>
-          <button onClick={() => setPanel('friends')}>👥 <span>好友</span></button>
-          <button onClick={() => setPanel('catalog')}>📖 <span>图鉴</span></button>
-          {import.meta.env.DEV && <button onClick={() => setPanel('debug')}>⚙️ <span>联调</span></button>}
-        </nav>
+        <div className="hud-actions">
+          {import.meta.env.DEV && <button className="hud-debug-button" onClick={() => openPanel('debug')} title="联调设置" aria-label="打开联调设置"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M6 8h16M6 14h16M6 20h16" /><circle cx="11" cy="8" r="2.5" /><circle cx="18" cy="14" r="2.5" /><circle cx="9" cy="20" r="2.5" /></svg></button>}
+          <AudioControls />
+        </div>
       </header>
-
-      <section className="hero-strip">
-        <div><p className="eyebrow">{isFriend ? 'VISITING FARM' : 'MY LITTLE FARM'}</p><h1>{isFriend ? `${farmDisplayName}的农场` : `${farmDisplayName || '农场主'}，今天也要好好种田`}</h1></div>
-        {isFriend && <button className="secondary" onClick={() => navigate(`/u/${state.session?.userId}/farm`)}>← 回我的农场</button>}
-      </section>
 
       {viewerFull && <section className="viewer-limit-banner" role="status">
         <div className="viewer-limit-icon" aria-hidden="true">🌾</div>
@@ -255,70 +338,144 @@ function FarmPage() {
         <button className="secondary" onClick={() => void retryFarmSubscription()}>看看有没有空位</button>
       </section>}
 
-      <div className="farm-layout">
-        <section className="field-card" ref={fieldRef}>
-          <div className="field-decor" aria-hidden="true">☁️ <span>🐦</span></div>
-          <div className="plot-grid">
-            {displayPlots.map((plot, index) => (
-              <Plot key={plot.plot_id} ordinal={index + 1} plot={plot} selected={plot.plot_id === selectedPlot?.plot_id} pending={Object.values(state.pending).includes(plot.plot_id)} harvestGhost={ghostPlotId === plot.plot_id} harvestGhostCropId={petHarvest?.plotId === plot.plot_id ? petHarvest.cropId : undefined} onClick={() => setSelected(plot.plot_id)} />
-            ))}
-          </div>
-          <div className="field-footer"><span>🌻</span><span>🌿</span><span className="field-footer-end">🌼</span></div>
-          {hasPet === true && !isFriend && <FarmPet key={petHarvest?.eventId ?? 'pet-idle'} fieldRef={fieldRef} cue={petHarvest} onGhostPlot={setGhostPlotId} onComplete={completePetHarvest} />}
-        </section>
-
-        <aside className="selection-card">
-          <p className="eyebrow">当前选择</p>
-          <div className="plot-number">{String(selectedOrdinal).padStart(2, '0')}</div>
-          <h2>{plotTitle(selectedPlot)}</h2>
-          <p className="muted">{plotDescription(selectedPlot)}</p>
-          {selectedPlot?.mature_at && selectedPlot.growth_stage !== 'MATURE' && <Countdown matureAt={selectedPlot.mature_at} now={now} />}
-          <div className="detail-list">
-            <div><span>地块状态</span><b>{selectedPlot?.status ?? 'EMPTY'}</b></div>
-            <div><span>成长阶段</span><b>{selectedPlot?.growth_stage ?? '—'}</b></div>
-            <div><span>当前产量</span><b>{currentYield === null ? '—' : `${currentYield} 份`}</b></div>
-          </div>
-          {!isFriend && selectedPlot?.status === 'EMPTY' && <CropPicker selected={selectedCrop.id} onSelect={setSelectedCropId} inventory={playerEconomy?.inventory ?? []} />}
-          <button className="primary action-button" onClick={perform} disabled={!action || !connected} aria-busy={busy}>
-            {!connected ? '等待实时连接…' : needsSeed ? '种子不足 · 去购买' : action?.label ?? '请选择可操作地块'}
-          </button>
-          <p className="authority-note">操作立即显示，最终结果以服务端为准。</p>
-        </aside>
-      </div>
-
-      <section className="dock">
-        <div className="inventory-summary">
-          <div className="dock-icon">🧺</div><div><small>我的仓库 · 种子 {inventoryCount(playerEconomy?.inventory ?? [], 'SEED')}</small><strong>{CROPS.map((crop) => `${crop.icon} ${cropInventoryCount(playerEconomy?.inventory ?? [], 'CROP', crop)}`).join(' · ')}</strong></div>
+      <section className="farm-game-stage">
+        <div className="farm-name-ribbon">
+          <p>{isFriend ? 'FRIEND FARM' : 'SUNNY FARM'}</p>
+          <h1>{isFriend ? `${farmDisplayName}的农场` : `${farmDisplayName || '农场主'}的小农场`}</h1>
+          <span>{isFriend ? '看看好友今天种了什么' : '风吹麦浪，今天也宜播种'}</span>
         </div>
-        <button onClick={() => setPanel('shop')}><span>🛒</span><b>种子商店</b><small>小麦 · 胡萝卜 · 番茄</small></button>
-        <button onClick={() => setPanel('pet')}><span>🐣</span><b>农场伙伴</b><small>{hasPet === false ? '购买小鸡 · 200 金币' : hasPet === true ? '管理自动收获' : '正在确认伙伴状态'}</small></button>
-        <button className="quiet" onClick={logout}><span>🚪</span><b>离开农场</b><small>清除当前会话</small></button>
+        <section className={`field-card game-field tool-${equippedTool} ${toolCursorVisible ? 'tool-cursor-visible' : ''} ${toolDragging ? 'tool-dragging' : ''}`} ref={fieldRef} onPointerMove={trackToolCursor} onPointerEnter={trackToolCursor} onPointerLeave={leaveToolCursor}>
+          {isFriend && <button className="farm-home-sign" onClick={() => navigate(`/u/${state.session?.userId}/farm`)} aria-label="回到我的农场"><span>←</span><b>我的农场</b><small>沿小路回家</small></button>}
+          <div className="farm-ground-details" aria-hidden="true"><i className="farm-path path-west" /><i className="farm-path path-east" /><i className="farm-path path-south" /><span className="grass-tuft tuft-a" /><span className="grass-tuft tuft-b" /><span className="grass-tuft tuft-c" /><span className="grass-tuft tuft-d" /><span className="wildflower flowers-a">✿</span><span className="wildflower flowers-b">✿</span></div>
+          <div className="scene-buildings">
+            <button className="scene-building building-shop" onClick={() => openPanel('shop')} aria-label="打开种子商店"><img src="/assets/scene/market-stall.webp" alt="" /><span>种子商店</span></button>
+            <button className="scene-building building-tasks" onClick={() => openPanel('tasks')} aria-label="打开任务"><img src="/assets/scene/task-board.webp" alt="" /><span>任务</span></button>
+            <button className="scene-building building-friends" onClick={() => openPanel('friends')} aria-label="打开好友农场"><img src="/assets/scene/friend-gate.webp" alt="" /><span>好友农场</span></button>
+            <button className="scene-building building-mail" onClick={() => openPanel('mail')} aria-label="打开乡间邮局"><img src="/assets/scene/mailbox.webp" alt="" /><span>乡间邮局</span>{(state.mailboxSummary?.unread_count ?? 0) > 0 && <b className="scene-unread-badge">{(state.mailboxSummary?.unread_count ?? 0) > 99 ? '99+' : state.mailboxSummary?.unread_count}</b>}</button>
+          </div>
+          <div className="plot-grid">
+            {displayPlots.map((plot, index) => {
+              const toolAction = toolActionFor(plot, equippedTool, isFriend, selectedCrop)
+              return <Plot key={plot.plot_id} ordinal={index + 1} plot={plot} selected={selected !== null && plot.plot_id === selectedPlot?.plot_id} pending={Object.values(state.pending).includes(plot.plot_id)} actionable={Boolean(toolAction)} actionHint={toolAction?.label} equippedTool={equippedTool} now={now} actionFx={actionFx?.plotId === plot.plot_id ? actionFx.sound : undefined} harvestGhost={ghostPlotId === plot.plot_id} harvestGhostCropId={petHarvest?.plotId === plot.plot_id ? petHarvest.cropId : undefined} onClick={() => performOnPlot(plot)} onDrop={(event) => { event.preventDefault(); setToolDragging(false); performOnPlot(plot) }} />
+            })}
+          </div>
+          <div className="field-landmark" aria-hidden="true"><img src="/assets/decor/hay-bales.png" alt="" /><img src="/assets/decor/seed-sacks.png" alt="" /></div>
+          <div className="field-fence" aria-hidden="true"><img src="/assets/decor/fence.png" alt="" /><img src="/assets/decor/fence.png" alt="" /><img src="/assets/decor/fence.png" alt="" /></div>
+          {hasPet === true && !isFriend && <FarmPet key={petHarvest?.eventId ?? 'pet-idle'} fieldRef={fieldRef} cue={petHarvest} onGhostPlot={setGhostPlotId} onComplete={completePetHarvest} />}
+          <FarmToolCursor ref={toolCursorRef} tool={equippedTool} crop={selectedCrop} />
+          <FarmToolPalette tool={equippedTool} selectedCrop={selectedCrop} inventory={playerEconomy?.inventory ?? []} friend={isFriend} onEquip={equipTool} onDragChange={setToolDragging} />
+        </section>
       </section>
 
-      {panel && <PanelModal panel={panel} onClose={() => setPanel(null)} />}
+      <nav className="game-toolbelt" aria-label="农场工具栏">
+        <button className="toolbelt-inventory" onClick={() => openPanel('catalog')}><img src="/assets/scene/warehouse.webp" alt="" /><span><b>仓库与图鉴</b><small>种子 {inventoryCount(playerEconomy?.inventory ?? [], 'SEED')} · 收获 {inventoryCount(playerEconomy?.inventory ?? [], 'CROP')}</small></span></button>
+        <button onClick={() => openPanel('shop')}><img src="/assets/scene/market-stall.webp" alt="" /><span><b>种子商店</b><small>买种子 · 卖作物</small></span></button>
+        <button onClick={() => openPanel('friends')}><img src="/assets/scene/friend-gate.webp" alt="" /><span><b>好友</b><small>拜访与邀请</small></span></button>
+        <button onClick={() => openPanel('pet')}><img src="/assets/scene/chicken-coop.webp" alt="" /><span><b>农场伙伴</b><small>{hasPet ? '小鸡正在巡田' : '领养自动收获小鸡'}</small></span></button>
+        <button className="toolbelt-exit" onClick={logout}><span className="exit-icon">↪</span><span><b>离开农场</b><small>安全退出游戏</small></span></button>
+      </nav>
+
+      {panel && <PanelModal panel={panel} onClose={() => { farmAudio.play('close'); setPanel(null) }} />}
       {state.notice && <div className={`toast ${state.notice.tone}`} role="status">{state.notice.text}</div>}
     </main>
   )
 }
 
-function CropPicker({ selected, onSelect, inventory }: { selected: CropId; onSelect: (cropId: CropId) => void; inventory: InventoryItem[] }) {
+function CropPicker({ selected, onSelect, inventory, artwork = 'crop' }: { selected: CropId; onSelect: (cropId: CropId) => void; inventory: InventoryItem[]; artwork?: 'crop' | 'seed' }) {
   return <div className="crop-picker" aria-label="选择要播种的作物">{CROPS.map((crop) => {
-    const seeds = cropInventoryCount(inventory, 'SEED', crop)
-    return <button type="button" key={crop.id} className={selected === crop.id ? 'active' : ''} onClick={() => onSelect(crop.id)}><span>{crop.icon}</span><b>{crop.shortName}</b><small>种子 {seeds}</small></button>
+    const stock = cropInventoryCount(inventory, artwork === 'seed' ? 'SEED' : 'CROP', crop)
+    return <button type="button" key={crop.id} className={`crop-${crop.id.toLowerCase()} ${selected === crop.id ? 'active' : ''}`} onClick={() => onSelect(crop.id)}><span>{artwork === 'seed' ? <SeedArtwork crop={crop} /> : <CropArtwork crop={crop} />}</span><b>{crop.shortName}</b><small className={artwork === 'seed' ? 'merchandise-price' : 'merchandise-stock'}>{artwork === 'seed' ? crop.seedPrice : `库存 ${stock}`}</small></button>
   })}</div>
 }
 
-function Plot({ plot, ordinal, selected, pending, harvestGhost, harvestGhostCropId, onClick }: { plot: PlotView; ordinal: number; selected: boolean; pending: boolean; harvestGhost: boolean; harvestGhostCropId?: string; onClick: () => void }) {
+function WateringCanIcon({ className = '' }: { className?: string }) {
+  return <svg className={className} viewBox="0 0 72 58" aria-hidden="true"><path d="M18 22h31v25c0 6-5 9-15 9S18 53 18 47V22Z" fill="#79aeb0" stroke="#416b70" strokeWidth="3" /><path d="M47 28c10-9 17-11 22-8l-3 7c-5-1-10 1-17 8" fill="#96c6c5" stroke="#416b70" strokeWidth="3" strokeLinejoin="round" /><path d="M20 30C4 24 3 45 18 48" fill="none" stroke="#416b70" strokeWidth="5" strokeLinecap="round" /><path d="M24 17h21v7H24z" fill="#e3ba54" stroke="#765f32" strokeWidth="3" /><path d="M65 27c-1 5-5 7-11 7" fill="none" stroke="#416b70" strokeWidth="3" strokeLinecap="round" /></svg>
+}
+
+const FarmToolCursor = forwardRef<HTMLDivElement, { tool: FarmTool; crop: CropDefinition }>(({ tool, crop }, ref) => (
+  <div ref={ref} className={`farm-tool-cursor cursor-${tool}`} aria-hidden="true">
+    {tool === 'plant' && <span className="cursor-seed"><SeedArtwork crop={crop} /></span>}
+    {tool === 'water' && <span className="cursor-watering"><WateringCanIcon /><i>💧</i></span>}
+    {tool === 'harvest' && <span className="cursor-basket">🧺</span>}
+  </div>
+))
+
+function FarmToolPalette({ tool, selectedCrop, inventory, friend, onEquip, onDragChange }: {
+  tool: FarmTool
+  selectedCrop: CropDefinition
+  inventory: InventoryItem[]
+  friend: boolean
+  onEquip: (tool: FarmTool, cropId?: CropId) => void
+  onDragChange: (dragging: boolean) => void
+}) {
+  const drag = (event: ReactDragEvent<HTMLButtonElement>, nextTool: FarmTool, cropId?: CropId) => {
+    onEquip(nextTool, cropId)
+    onDragChange(true)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', cropId ? `${nextTool}:${cropId}` : nextTool)
+  }
+  return <div className="farm-tool-palette" aria-label="农具栏">
+    <span className="tool-palette-title">农具</span>
+    <button className={tool === 'inspect' ? 'active' : ''} aria-label="查看土地信息" onClick={() => onEquip('inspect')}><b>⌕</b><small>查看</small></button>
+    {!friend && CROPS.map((crop) => {
+      const count = cropInventoryCount(inventory, 'SEED', crop)
+      return <button draggable key={crop.id} className={`seed-tool ${tool === 'plant' && selectedCrop.id === crop.id ? 'active' : ''} ${count <= 0 ? 'empty-stock' : ''}`} aria-label={`装备${crop.shortName}种子，库存 ${count}`} onClick={() => onEquip('plant', crop.id)} onDragStart={(event) => drag(event, 'plant', crop.id)} onDragEnd={() => onDragChange(false)}><SeedArtwork crop={crop} /><small>{crop.shortName}</small><em>{count}</em></button>
+    })}
+    <button draggable className={tool === 'water' ? 'active' : ''} aria-label="装备浇水壶" onClick={() => onEquip('water')} onDragStart={(event) => drag(event, 'water')} onDragEnd={() => onDragChange(false)}><WateringCanIcon /><small>浇水</small></button>
+    <button draggable className={tool === 'harvest' ? 'active' : ''} aria-label={friend ? '装备采摘篮' : '装备收获篮'} onClick={() => onEquip('harvest')} onDragStart={(event) => drag(event, 'harvest')} onDragEnd={() => onDragChange(false)}><b className="basket-tool">🧺</b><small>{friend ? '采摘' : '收获'}</small></button>
+    <span className="tool-palette-hint">{tool === 'inspect' ? '点击土地查看状态' : tool === 'plant' ? `移动到空地，点击播种${selectedCrop.shortName}` : tool === 'water' ? '移动到成长作物，点击浇水' : friend ? '移动到成熟作物，点击采摘' : '移动到成熟作物，点击收获'}</span>
+  </div>
+}
+
+function CropArtwork({ crop, stage = 'MATURE', className = '' }: { crop: CropDefinition; stage?: string; className?: string }) {
+  return <img className={`crop-artwork ${className}`.trim()} src={cropStageAsset(crop, stage)} alt="" draggable={false} decoding="async" />
+}
+
+function SeedArtwork({ crop, className = '' }: { crop: CropDefinition; className?: string }) {
+  return <img className={`seed-artwork ${className}`.trim()} src={cropSeedAsset(crop)} alt="" draggable={false} decoding="async" />
+}
+
+function Plot({ plot, ordinal, selected, pending, actionable, actionHint, equippedTool, now, actionFx, harvestGhost, harvestGhostCropId, onClick, onDrop }: { plot: PlotView; ordinal: number; selected: boolean; pending: boolean; actionable: boolean; actionHint?: string; equippedTool: FarmTool; now: number; actionFx?: FarmSound; harvestGhost: boolean; harvestGhostCropId?: string; onClick: () => void; onDrop: (event: ReactDragEvent<HTMLButtonElement>) => void }) {
   const empty = plot.status === 'EMPTY'
   const crop = cropDefinition(harvestGhostCropId ?? plot.crop_id)
-  const art = harvestGhost ? crop.icon : empty ? '＋' : cropStageArt(crop, plot.growth_stage)
+  const art = empty ? EMPTY_PLOT_ASSET : cropStageAsset(crop, harvestGhost ? 'MATURE' : plot.growth_stage)
   return (
-    <button data-plot-id={plot.plot_id} className={`plot crop-${crop.id.toLowerCase()} ${empty ? 'empty' : 'growing'} ${plot.growth_stage?.toLowerCase() ?? ''} ${selected ? 'selected' : ''} ${pending ? 'syncing' : ''} ${harvestGhost ? 'pet-harvest-target' : ''}`} onClick={onClick} aria-label={`地块 ${ordinal}，${plotTitle(plot)}`} aria-busy={pending}>
-      <span className="furrows" />
-      <span className="crop">{art}</span>
+    <button data-plot-id={plot.plot_id} className={`plot crop-${crop.id.toLowerCase()} ${empty ? 'empty' : 'growing'} ${plot.growth_stage?.toLowerCase() ?? ''} ${selected ? 'selected' : ''} ${pending ? 'syncing' : ''} ${equippedTool !== 'inspect' ? actionable ? 'tool-ready' : 'tool-blocked' : ''} ${actionFx ? `fx-${actionFx}` : ''} ${harvestGhost ? 'pet-harvest-target' : ''}`} onClick={onClick} onDragOver={(event) => { if (actionable) { event.preventDefault(); event.dataTransfer.dropEffect = 'move' } }} onDrop={onDrop} aria-label={`地块 ${ordinal}，${plotTitle(plot)}${equippedTool !== 'inspect' ? actionable ? '，可以使用当前农具' : '，不能使用当前农具' : ''}`} aria-busy={pending}>
+      <span className="crop"><img className="plot-artwork" src={art} alt="" draggable={false} decoding="async" /></span>
+      {selected && plot.mature_at && plot.growth_stage !== 'MATURE' && <PlotCountdown matureAt={plot.mature_at} now={now} />}
+      {actionFx === 'water' && <span className="action-particles water-particles" aria-hidden="true">💧</span>}
+      {actionFx === 'plant' && <span className="action-particles earth-particles" aria-hidden="true">✦</span>}
+      {(actionFx === 'harvest' || actionFx === 'steal') && <span className="action-particles harvest-particles" aria-hidden="true">✦</span>}
+      {equippedTool !== 'inspect' && <span className="plot-tool-hint">{actionable ? actionHint : '换个农具'}</span>}
       <span className="plot-label">{harvestGhost ? '小鸡收获中' : empty ? '空地' : plot.growth_stage === 'MATURE' ? '可以收获' : '生长中'}</span>
     </button>
   )
+}
+
+function PlotCountdown({ matureAt, now }: { matureAt: string; now: number }) {
+  const seconds = countdownSeconds(matureAt, now)
+  return <span className="plot-countdown" role="status"><small>距离成熟</small><b>{Math.floor(seconds / 60).toString().padStart(2, '0')}:{(seconds % 60).toString().padStart(2, '0')}</b></span>
+}
+
+function AudioControls() {
+  const [preferences, setPreferences] = useState<AudioPreferences>(() => farmAudio.getPreferences())
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => farmAudio.subscribe(setPreferences), [])
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) setOpen(false) }
+    document.addEventListener('pointerdown', close)
+    return () => document.removeEventListener('pointerdown', close)
+  }, [open])
+  return <div className="audio-controls" aria-label="声音设置" ref={rootRef}>
+    <button className={`sound-menu-button ${preferences.music || preferences.effects ? 'on' : ''}`} onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label="调整游戏音量"><span>{preferences.music || preferences.effects ? '🔊' : '🔇'}</span><b>声音</b></button>
+    {open && <div className="sound-popover">
+      <header><span>🎵</span><div><b>田园声音</b><small>背景音乐与操作反馈</small></div></header>
+      <div className="volume-row"><span><b>背景音乐</b><button aria-label={preferences.music ? '关闭背景音乐' : '开启背景音乐'} onClick={() => farmAudio.setMusic(!preferences.music)}>{preferences.music ? '开启' : '静音'}</button></span><input aria-label="背景音乐音量" type="range" min="0" max="100" value={Math.round(preferences.musicVolume * 100)} onChange={(event) => farmAudio.setMusicVolume(Number(event.target.value) / 100)} /><em>{Math.round(preferences.musicVolume * 100)}%</em></div>
+      <div className="volume-row"><span><b>操作音效</b><button aria-label={preferences.effects ? '关闭操作音效' : '开启操作音效'} onClick={() => farmAudio.setEffects(!preferences.effects)}>{preferences.effects ? '开启' : '静音'}</button></span><input aria-label="操作音效音量" type="range" min="0" max="100" value={Math.round(preferences.effectsVolume * 100)} onChange={(event) => farmAudio.setEffectsVolume(Number(event.target.value) / 100)} /><em>{Math.round(preferences.effectsVolume * 100)}%</em></div>
+    </div>}
+  </div>
 }
 
 type PetPhase = 'idle' | 'walking' | 'harvesting' | 'returning'
@@ -384,7 +541,7 @@ function FarmPet({ fieldRef, cue, onGhostPlot, onComplete }: {
   return (
     <div ref={petRef} className={`farm-pet ${phase}`} style={style} aria-label={phase === 'idle' ? '宠物正在休息' : '宠物正在自动收获'}>
       {phase === 'harvesting' && <span className="farm-pet-bubble">收好啦！</span>}
-      <span className="farm-pet-character" aria-hidden="true">🐔</span>
+      <span className="farm-pet-character" aria-hidden="true"><img src="/assets/decor/farm-chicken.webp" alt="" draggable={false} decoding="async" /></span>
     </div>
   )
 }
@@ -395,14 +552,14 @@ function Countdown({ matureAt, now }: { matureAt: string; now: number }) {
 }
 
 function PanelModal({ panel, onClose }: { panel: Exclude<Panel, null>; onClose: () => void }) {
-  return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}><section className="modal"><button className="close" onClick={onClose} aria-label="关闭">×</button><PanelContent panel={panel} /></section></div>
+  return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}><section className={`modal game-panel panel-${panel}`}><button className="close" onClick={onClose} aria-label="关闭">×</button><PanelContent panel={panel} onClose={onClose} /></section></div>
 }
 
-function PanelContent({ panel }: { panel: Exclude<Panel, null> }) {
+function PanelContent({ panel, onClose }: { panel: Exclude<Panel, null>; onClose: () => void }) {
   if (panel === 'shop') return <ShopPanel />
   if (panel === 'tasks') return <TasksPanel />
   if (panel === 'mail') return <MailPanel />
-  if (panel === 'friends') return <FriendsPanel />
+  if (panel === 'friends') return <FriendsPanel onClose={onClose} />
   if (panel === 'catalog') return <CatalogPanel />
   if (panel === 'pet') return <PetPanel />
   return import.meta.env.DEV ? <DebugPanel /> : null
@@ -443,7 +600,19 @@ function ShopPanel() {
   }
   const buyingMode = mode === 'buy'
   const unitPrice = buyingMode ? selectedCrop.seedPrice : selectedCrop.sellPrice
-  return <><PanelTitle icon="🛒" title="种子小铺" subtitle="挑选当季作物，价格与成长节奏以服务端配置为准" /><div className="tabs shop-tabs" role="tablist"><button className={buyingMode ? 'active' : ''} role="tab" aria-selected={buyingMode} onClick={() => setMode('buy')}>购买种子</button><button className={!buyingMode ? 'active' : ''} role="tab" aria-selected={!buyingMode} onClick={() => setMode('sell')}>出售作物</button></div><CropPicker selected={selectedCrop.id} onSelect={setSelectedCropId} inventory={state.playerEconomy?.inventory ?? []} /><div className={`product crop-product crop-${selectedCrop.id.toLowerCase()}`}><div className="product-art">{selectedCrop.icon}</div><div><h3>{buyingMode ? `购买${selectedCrop.name}种子` : `出售仓库${selectedCrop.shortName}`}</h3><p>{buyingMode ? `成熟约 ${selectedCrop.growthMinutes} 分钟，每块预计收获 ${selectedCrop.harvestYield} 份` : `仓库当前共有 ${cropCount} 份${selectedCrop.shortName}`}</p><div className="price">🪙 {unitPrice} / {buyingMode ? '袋' : '份'}</div></div></div><div className="quantity-picker"><span>{buyingMode ? '购买数量' : '出售数量'}</span><div><button type="button" aria-label="减少数量" disabled={normalizedQuantity <= 1} onClick={() => changeQuantity(normalizedQuantity - 1)}>−</button><input aria-label={buyingMode ? '购买数量' : '出售数量'} type="number" min="1" max="10000" step="1" value={normalizedQuantity} onChange={(event) => changeQuantity(Number(event.target.value))} /><button type="button" aria-label="增加数量" disabled={normalizedQuantity >= 10_000} onClick={() => changeQuantity(normalizedQuantity + 1)}>＋</button></div><small>{buyingMode ? `余额最多可买 ${Math.floor(balance / selectedCrop.seedPrice)} 袋` : `仓库最多可卖 ${cropCount} 份`}</small></div><div className="button-row"><button className={buyingMode ? 'primary shop-action' : 'secondary shop-action'} disabled={buyingMode ? balance < normalizedQuantity * selectedCrop.seedPrice : cropCount < normalizedQuantity} aria-busy={trading} onClick={() => act(mode)}>{buyingMode ? `购买 ${normalizedQuantity} 袋 · ${normalizedQuantity * selectedCrop.seedPrice} 金币` : `出售 ${normalizedQuantity} 份 · 获得 ${normalizedQuantity * selectedCrop.sellPrice} 金币`}</button></div></>
+  return <div className="shop-window">
+    <section className="shop-marquee">
+      <PanelTitle title="种子小铺" subtitle="当季好种，丰收后也欢迎拿回来寄售" />
+      <div className="shop-tradebar"><div className="tabs shop-tabs" role="tablist"><button className={buyingMode ? 'active' : ''} role="tab" aria-selected={buyingMode} onClick={() => setMode('buy')}>🌱 种子货架</button><button className={!buyingMode ? 'active' : ''} role="tab" aria-selected={!buyingMode} onClick={() => setMode('sell')}>🧺 收购柜台</button></div><div className="shop-balance"><span>现有金币</span><b><i className="farm-coin" aria-hidden="true" />{balance}</b></div></div>
+    </section>
+    <div className={`shop-shelf ${buyingMode ? 'seed-shelf' : 'produce-shelf'}`}><span className="shelf-label">{buyingMode ? '本季种子格' : '今日收购格'}</span><CropPicker selected={selectedCrop.id} onSelect={setSelectedCropId} inventory={state.playerEconomy?.inventory ?? []} artwork={buyingMode ? 'seed' : 'crop'} /></div>
+    <section className={`shop-order-card crop-${selectedCrop.id.toLowerCase()}`}>
+      <div className="shop-product-portrait">{buyingMode ? <SeedArtwork crop={selectedCrop} /> : <CropArtwork crop={selectedCrop} />}<span>{buyingMode ? '精选种子' : '今日收购'}</span></div>
+      <div className="shop-product-copy"><small>{buyingMode ? '店主推荐 · 当季好种' : '今日收购 · 新鲜作物'}</small><h3>{buyingMode ? selectedCrop.name : `仓库里的${selectedCrop.shortName}`}</h3><p>{buyingMode ? `${selectedCrop.growthMinutes} 分钟成熟 · 每块预计收获 ${selectedCrop.harvestYield} 份` : `当前库存 ${cropCount} 份 · 新鲜作物按份收购`}</p><strong className="shop-price"><i className="farm-coin" aria-hidden="true" />{unitPrice}<em>/ {buyingMode ? '袋' : '份'}</em></strong></div>
+      <div className="shop-stepper"><small>{buyingMode ? '购买数量' : '出售数量'}</small><div><button type="button" aria-label="减少数量" disabled={normalizedQuantity <= 1} onClick={() => changeQuantity(normalizedQuantity - 1)}>−</button><input aria-label={buyingMode ? '购买数量' : '出售数量'} type="number" min="1" max="10000" step="1" value={normalizedQuantity} onChange={(event) => changeQuantity(Number(event.target.value))} /><button type="button" aria-label="增加数量" disabled={normalizedQuantity >= 10_000} onClick={() => changeQuantity(normalizedQuantity + 1)}>＋</button></div><span>{buyingMode ? `最多可买 ${Math.floor(balance / selectedCrop.seedPrice)} 袋` : `最多可卖 ${cropCount} 份`}</span></div>
+    </section>
+    <button className={`shop-checkout ${buyingMode ? 'buy' : 'sell'}`} disabled={buyingMode ? balance < normalizedQuantity * selectedCrop.seedPrice : cropCount < normalizedQuantity} aria-busy={trading} onClick={() => act(mode)}><span>{trading ? '店主正在清点…' : buyingMode ? '购买种子' : '出售作物'}</span><b>{buyingMode ? `${normalizedQuantity} 袋 · 支付 ${normalizedQuantity * selectedCrop.seedPrice} 金币` : `${normalizedQuantity} 份 · 获得 ${normalizedQuantity * selectedCrop.sellPrice} 金币`}</b></button>
+  </div>
 }
 
 function CatalogPanel() {
@@ -462,7 +631,7 @@ function CatalogPanel() {
   const unlockedCount = entries.filter((entry) => Boolean(entry.unlock?.unlocked_at)).length
   return <><PanelTitle icon="📖" title="作物图鉴" subtitle="收获作物后由服务端永久解锁" /><div className="catalog-summary"><b>{unlockedCount} / {CROPS.length}</b><span>已发现作物</span></div><div className="catalog-grid">{entries.map(({ crop, unlock }) => {
     const unlocked = Boolean(unlock?.unlocked_at)
-    return <article className={`catalog-card crop-${crop.id.toLowerCase()} ${unlocked ? 'unlocked' : 'locked'}`} key={crop.catalogKey}><div className="catalog-art">{unlocked ? crop.icon : '？'}</div><div><span className="catalog-status">{unlocked ? '已解锁' : '尚未解锁'}</span><h3>{unlocked ? crop.name : '神秘作物'}</h3><p>{unlocked ? crop.description : `亲手收获${crop.shortName}后，它会出现在这里。`}</p>{unlocked && unlock && <time>发现于 {new Date(unlock.unlocked_at).toLocaleDateString()}</time>}</div></article>
+    return <article className={`catalog-card crop-${crop.id.toLowerCase()} ${unlocked ? 'unlocked' : 'locked'}`} key={crop.catalogKey}><div className="catalog-art">{unlocked ? <CropArtwork crop={crop} /> : '？'}</div><div><span className="catalog-status">{unlocked ? '已解锁' : '尚未解锁'}</span><h3>{unlocked ? crop.name : '神秘作物'}</h3><p>{unlocked ? crop.description : `亲手收获${crop.shortName}后，它会出现在这里。`}</p>{unlocked && unlock && <time>发现于 {new Date(unlock.unlocked_at).toLocaleDateString()}</time>}</div></article>
   })}</div></>
 }
 
@@ -474,7 +643,7 @@ function TasksPanel() {
   const load = () => api.tasks().then((r) => setTasks(writePanelCache(cacheKey, r.tasks))).catch((e) => showApiError(e, notify))
   useEffect(() => { void load() }, [])
   const claim = async (task: Task) => { setBusy(task.task_key); try { const result = await api.claimTask(task.task_key); notify(`领取 ${result.coin_reward} 金币`, 'success'); await refreshPlayerAssets(); load() } catch (e) { showApiError(e, notify) } finally { setBusy('') } }
-  return <><PanelTitle icon="📒" title="今日任务" subtitle="一点一滴，都是农场的成长" /><ListLoading value={tasks}>{(tasks ?? []).map((task) => <article className="list-card" key={task.task_key}><div><h3>{task.description || task.task_key}</h3><p>{task.progress} / {task.target} · 奖励 🪙 {task.coin_reward}</p><progress value={task.progress} max={task.target || 1} /></div><button className="small-button" disabled={task.status !== 'COMPLETED' || busy === task.task_key} onClick={() => claim(task)}>{task.status === 'CLAIMED' ? '已领取' : busy === task.task_key ? '领取中' : '领取'}</button></article>)}</ListLoading></>
+  return <><PanelTitle icon="📒" title="任务" subtitle="一点一滴，都是农场的成长" /><ListLoading value={tasks}>{(tasks ?? []).map((task) => <article className="list-card" key={task.task_key}><div><h3>{task.description || task.task_key}</h3><p>{task.progress} / {task.target} · 奖励 🪙 {task.coin_reward}</p><progress value={task.progress} max={task.target || 1} /></div><button className="small-button" disabled={task.status !== 'COMPLETED' || busy === task.task_key} onClick={() => claim(task)}>{task.status === 'CLAIMED' ? '已领取' : busy === task.task_key ? '领取中' : '领取'}</button></article>)}</ListLoading></>
 }
 
 function MailPanel() {
@@ -482,22 +651,78 @@ function MailPanel() {
   const cacheKey = panelCacheKey(state.session?.userId, 'mail')
   const [mails, setMails] = useState<Mail[] | null>(() => readPanelCache<Mail[]>(cacheKey))
   const [busy, setBusy] = useState('')
+  const [selectedMailId, setSelectedMailId] = useState('')
+  const [markingReadId, setMarkingReadId] = useState('')
+  const [markingAllRead, setMarkingAllRead] = useState(false)
   const load = () => Promise.all([api.mails(), refreshMailboxSummary()])
     .then(([r]) => setMails(writePanelCache(cacheKey, r.mails)))
     .catch((e) => showApiError(e, notify))
   useEffect(() => { void load() }, [])
-  const open = async (mail: Mail) => { if (mail.status === 'UNREAD') { try { await api.readMail(String(mail.mail_id)); load() } catch (e) { showApiError(e, notify) } } }
+  const markRead = async (mail: Mail) => {
+    if (mail.status !== 'UNREAD' || markingReadId || markingAllRead) return
+    const mailId = String(mail.mail_id)
+    setMarkingReadId(mailId)
+    setMails((current) => current?.map((item) => String(item.mail_id) === mailId ? { ...item, status: 'READ' } : item) ?? current)
+    farmAudio.play('success')
+    try { await api.readMail(mailId); await refreshMailboxSummary(); void load() } catch (e) {
+      setMails((current) => current?.map((item) => String(item.mail_id) === mailId ? { ...item, status: 'UNREAD' } : item) ?? current)
+      showApiError(e, notify)
+    } finally { setMarkingReadId('') }
+  }
+  const markAllRead = async () => {
+    const unread = (mails ?? []).filter((mail) => mail.status === 'UNREAD')
+    if (unread.length === 0 || markingReadId || markingAllRead) return
+    setMarkingAllRead(true)
+    setMails((current) => current?.map((mail) => mail.status === 'UNREAD' ? { ...mail, status: 'READ' } : mail) ?? current)
+    farmAudio.play('success')
+    const results = await Promise.allSettled(unread.map((mail) => api.readMail(String(mail.mail_id))))
+    const failed = results.filter((result) => result.status === 'rejected').length
+    await load()
+    if (failed === 0) notify(`已将 ${unread.length} 封来信全部标记为已读`, 'success')
+    else notify(`${unread.length - failed} 封已读，${failed} 封处理失败，请稍后重试`, 'error')
+    setMarkingAllRead(false)
+  }
+  const open = (mail: Mail) => {
+    setSelectedMailId(String(mail.mail_id))
+    farmAudio.play('open')
+  }
   const claim = async (id: string) => { setBusy(id); try { await api.claimAttachment(id); notify('附件已放入仓库', 'success'); await refreshPlayerAssets(); load() } catch (e) { showApiError(e, notify) } finally { setBusy('') } }
-  return <><PanelTitle icon="✉️" title="乡间邮局" subtitle="最近送到的 20 封信" /><ListLoading value={mails}>{(mails ?? []).map((mail) => <article className={`mail-card ${mail.status === 'UNREAD' ? 'unread' : ''}`} key={String(mail.mail_id)} onClick={() => open(mail)}><header><h3>{mail.title}</h3><time>{new Date(mail.created_at).toLocaleDateString()}</time></header><p>{mail.content}</p>{mail.attachments?.map((item) => <button key={String(item.attachment_id)} className="attachment" disabled={Boolean(item.claimed_at) || busy === String(item.attachment_id)} onClick={(e) => { e.stopPropagation(); void claim(String(item.attachment_id)) }}>🎁 {item.item_type} × {item.quantity} · {item.claimed_at ? '已领取' : '领取'}</button>)}</article>)}</ListLoading></>
+  const selectedMail = (mails ?? []).find((mail) => String(mail.mail_id) === selectedMailId)
+  return <>
+    <PanelTitle icon="✉️" title="乡间邮局" subtitle="邮差刚把信件送进了农场信箱" />
+    {mails === null ? <DelayedLoading label="邮差正在分拣信件…" /> : mails.length === 0 ? <div className="mailbox-empty"><span>📭</span><h3>今天还没有新信</h3><p>等风铃响起时，再来看看吧。</p></div> : <div className="mailbox-layout">
+      <aside className="mailbox-inbox">
+        <header><span>INBOX</span><b>收件匣</b><em>{mails.filter((mail) => mail.status === 'UNREAD').length} 封未读</em><button className="mail-read-all" type="button" disabled={markingAllRead || Boolean(markingReadId) || mails.every((mail) => mail.status !== 'UNREAD')} onClick={() => void markAllRead()}><i>{markingAllRead ? '···' : '✓'}</i>{markingAllRead ? '盖章中' : '一键已读'}</button></header>
+        <div className="mailbox-slots">{mails.map((mail) => <button className={`mail-envelope ${mail.status === 'UNREAD' ? 'unread' : 'read'} ${String(mail.mail_id) === selectedMailId ? 'active' : ''}`} key={String(mail.mail_id)} onClick={() => open(mail)}>
+          <span className="mail-seal" aria-label={mail.status === 'UNREAD' ? '未读' : '已读'}>{mail.status === 'UNREAD' ? '●' : '✓'}</span>
+          <span className="mail-envelope-copy"><b>{mail.title}</b><small>{mail.content}</small></span>
+          <time>{new Date(mail.created_at).toLocaleDateString()}</time>
+        </button>)}</div>
+      </aside>
+      <section className={`mailbox-reading ${selectedMail ? 'has-letter' : ''}`}>
+        {!selectedMail ? <div className="mailbox-placeholder"><span>✉</span><h3>选择一封信</h3><p>点击左侧信封，在这里拆阅来信。</p></div> : <article className={`opened-letter ${selectedMail.status === 'UNREAD' ? 'unread' : 'read'}`}>
+          <div className="letter-postmark"><span>FARM POST</span><b>✿</b></div>
+          <header><small>亲爱的农场主：</small><h3>{selectedMail.title}</h3><time>{new Date(selectedMail.created_at).toLocaleDateString()}</time></header>
+          <p>{selectedMail.content}</p>
+          <footer><span>乡间邮局 · 顺风送达</span></footer>
+          {selectedMail.status === 'UNREAD'
+            ? <button className="letter-read-seal unread" type="button" disabled={markingReadId === String(selectedMail.mail_id)} aria-label="盖章并标记为已读" onClick={() => void markRead(selectedMail)}><small>点击</small><b>{markingReadId === String(selectedMail.mail_id) ? '盖章中' : '盖章'}</b></button>
+            : <span className="letter-read-seal stamped" aria-label="已阅"><b>已阅</b></span>}
+          {(selectedMail.attachments?.length ?? 0) > 0 && <div className="mail-parcel"><b>📦 随信包裹</b>{(selectedMail.attachments ?? []).map((item) => <button key={String(item.attachment_id)} className="attachment" disabled={Boolean(item.claimed_at) || busy === String(item.attachment_id)} onClick={() => void claim(String(item.attachment_id))}>{item.item_type} × {item.quantity}<span>{item.claimed_at ? '已签收' : busy === String(item.attachment_id) ? '拆包中…' : '签收包裹'}</span></button>)}</div>}
+        </article>}
+      </section>
+    </div>}
+  </>
 }
 
-function FriendsPanel() {
+function FriendsPanel({ onClose }: { onClose: () => void }) {
   const { api, notify, state } = useApp()
   const navigate = useNavigate()
   const cacheKey = panelCacheKey(state.session?.userId, 'friends')
   const [friends, setFriends] = useState<Friend[] | null>(() => readPanelCache<Friend[]>(cacheKey))
   const [code, setCode] = useState('')
   const [created, setCreated] = useState('')
+  const [createdPath, setCreatedPath] = useState('')
   const [creating, setCreating] = useState(false)
   const [copied, setCopied] = useState(false)
   const [accepting, setAccepting] = useState(false)
@@ -509,6 +734,7 @@ function FriendsPanel() {
     try {
       const result = await api.createInvite()
       setCreated(result.invite_code)
+      setCreatedPath(safeInternalPath(result.invite_path ?? '') ?? buildInvitePath(result.invite_code))
     } catch (e) {
       showApiError(e, notify)
     } finally {
@@ -517,12 +743,13 @@ function FriendsPanel() {
   }
   const copyInvite = async () => {
     if (!created) return
+    const shareUrl = buildInviteUrl(created, createdPath, window.location.origin)
     try {
       if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(created)
+        await navigator.clipboard.writeText(shareUrl)
       } else {
         const copyField = document.createElement('textarea')
-        copyField.value = created
+        copyField.value = shareUrl
         copyField.setAttribute('readonly', '')
         copyField.style.position = 'fixed'
         copyField.style.opacity = '0'
@@ -533,19 +760,24 @@ function FriendsPanel() {
         if (!copiedWithFallback) throw new Error('copy command unavailable')
       }
       setCopied(true)
-      notify('邀请码已复制，可以发给好友啦', 'success')
+      notify('邀请链接已复制，好友打开后会自动加入', 'success')
       window.setTimeout(() => setCopied(false), 1800)
     } catch {
-      notify('复制失败，请长按邀请码手动复制', 'error')
+      notify('复制失败，请长按邀请链接手动复制', 'error')
     }
   }
   const accept = async () => {
+    const normalizedCode = normalizeInviteCode(code, window.location.origin)
+    if (!normalizedCode) {
+      notify('请输入有效的邀请码或邀请链接', 'error')
+      return
+    }
     setAccepting(true)
     try {
-      const result = await api.acceptInviteAndWait(code.trim(), (friends ?? []).map((friend) => friend.user_id))
+      const result = await api.acceptInviteAndWait(normalizedCode, (friends ?? []).map((friend) => friend.user_id))
       setFriends(writePanelCache(cacheKey, result.friends))
       setCode('')
-      notify(result.confirmed ? '已成为好友' : '邀请已接受，跨分片好友关系仍在同步', result.confirmed ? 'success' : 'info')
+      notify(result.confirmed ? '已成为好友' : '邀请已接受；若已是好友无需重复添加，跨分片关系会自动同步', result.confirmed ? 'success' : 'info')
       if (!result.confirmed) window.setTimeout(() => { void load() }, 2000)
     } catch (e) {
       showApiError(e, notify)
@@ -558,25 +790,30 @@ function FriendsPanel() {
     <section className="friend-invite-card">
       <div className="invite-card-heading">
         <span className="invite-card-icon">✦</span>
-        <div><h3>邀请一位新邻居</h3><p>生成专属邀请码，发送给想一起种田的朋友</p></div>
+        <div><h3>邀请一位新邻居</h3><p>复制专属链接，好友登录后会自动加入</p></div>
       </div>
       {!created ? (
         <button className="primary invite-create-button" disabled={creating} onClick={create}>{creating ? '正在生成…' : '生成专属邀请码'}</button>
       ) : (
         <div className="invite-code-shell">
-          <div className="invite-code-copy"><span>我的邀请码</span><code>{created}</code></div>
-          <button className={`copy-invite-button ${copied ? 'copied' : ''}`} onClick={copyInvite} aria-live="polite"><span>{copied ? '✓' : '⧉'}</span>{copied ? '已复制' : '复制'}</button>
+          <div className="invite-code-copy"><span>邀请链接</span><code title={buildInviteUrl(created, createdPath, window.location.origin)}>{buildInviteUrl(created, createdPath, window.location.origin)}</code></div>
+          <button className={`copy-invite-button ${copied ? 'copied' : ''}`} onClick={copyInvite} aria-live="polite"><span>{copied ? '✓' : '⧉'}</span>{copied ? '已复制' : '复制链接'}</button>
           <button className="invite-refresh-button" disabled={creating} onClick={create} aria-label="重新生成邀请码" title="重新生成邀请码">↻</button>
         </div>
       )}
       <div className="invite-divider"><span>或使用好友的邀请码</span></div>
       <div className="invite-accept-form">
-        <label htmlFor="friend-invite-code">好友邀请码</label>
-        <div className="inline-form"><input id="friend-invite-code" placeholder="粘贴或输入邀请码" value={code} onChange={(e) => setCode(e.target.value)} /><button className="small-button" disabled={!code.trim() || accepting} onClick={accept}>{accepting ? '同步中…' : '接受邀请'}</button></div>
+        <label htmlFor="friend-invite-code">好友邀请码或邀请链接</label>
+        <div className="inline-form"><input id="friend-invite-code" placeholder="粘贴邀请码或完整邀请链接" value={code} onChange={(e) => setCode(e.target.value)} /><button className="small-button" disabled={!code.trim() || accepting} onClick={accept}>{accepting ? '同步中…' : '接受邀请'}</button></div>
       </div>
     </section>
     <div className="friends-list-heading"><div><span>我的邻居</span><small>{friends === null ? '正在清点…' : `${friends.length} 位好友`}</small></div><i /></div>
-    <ListLoading value={friends}>{(friends ?? []).map((friend) => <article className="list-card friend-card" key={friend.user_id}><div className="friend-avatar">{friend.display_name.trim().slice(0, 1).toUpperCase() || '友'}</div><div className="friend-card-copy"><h3>{friend.display_name}</h3><p>去看看 TA 的作物长得怎么样</p></div><button className="small-button friend-visit-button" onClick={() => navigate(`/farm/${friend.user_id}`, { state: { friendDisplayName: friend.display_name } })}>拜访 <span>→</span></button></article>)}</ListLoading>
+    <ListLoading value={friends}>{(friends ?? []).map((friend, index) => <article className="list-card friend-card" key={friend.user_id}>
+      <div className="neighbor-scenery" aria-hidden="true"><span className="neighbor-house">{index % 3 === 0 ? '🏡' : index % 3 === 1 ? '🏠' : '🛖'}</span><i /></div>
+      <div className="friend-avatar">{friend.display_name.trim().slice(0, 1).toUpperCase() || '友'}</div>
+      <div className="friend-card-copy"><small>NO. {String(index + 1).padStart(2, '0')} · 田园邻居</small><h3>{friend.display_name} 的农场</h3><p>沿着乡间小路，去 TA 的田里串串门</p></div>
+      <button className="small-button friend-visit-button" onClick={() => { onClose(); navigate(`/farm/${friend.user_id}`, { state: { friendDisplayName: friend.display_name } }) }}><span>推开院门</span><b>拜访 →</b></button>
+    </article>)}</ListLoading>
   </>
 }
 
@@ -598,7 +835,7 @@ function PetPanel() {
     } finally { setSwitching(false) }
   }
   const balance = state.playerEconomy?.coin_balance ?? 0
-  return <><PanelTitle icon="🐣" title="农场伙伴" subtitle="购买小鸡后，可以每 30 秒自动巡查成熟作物" /><div className="pet-stage"><div className="pet-bubble">{busy && hasPet ? '正在搬家，马上就好！' : hasPet ? '咕咕！今天也一起努力吧。' : '给我一个温暖的新家吧？'}</div><div className={`pet-big ${busy && hasPet ? 'arriving' : ''}`}>🐔</div><h3>{hasPet === null ? '暂时没有查到伙伴状态' : hasPet ? '你的农场小鸡' : '还没有农场伙伴'}</h3>{busy && hasPet && <small className="pet-purchase-note">服务端正在确认购买，伙伴已经先来和你见面了</small>}{hasPet === true && <div className="pet-auto-row"><div><b>自动收获</b><small>{autoHarvestEnabled ? '每 30 秒巡查成熟作物' : '小鸡会留在原位休息'}</small></div><button className={`pet-switch ${autoHarvestEnabled ? 'on' : ''}`} role="switch" aria-checked={Boolean(autoHarvestEnabled)} disabled={busy || switching || autoHarvestEnabled === null} onClick={toggleAutoHarvest}><span /></button></div>}{hasPet === false && <><button className="primary" disabled={busy || balance < 200} onClick={buy}>{busy ? '正在迎接…' : '用 200 金币购买小鸡'}</button><small>{balance < 200 ? `当前 ${balance} 金币，还差 ${200 - balance} 金币` : `当前余额 ${balance} 金币`}</small></>}{hasPet === null && <button className="secondary" disabled={busy} onClick={check}>{busy ? '查询中…' : '重新查询宠物状态'}</button>}</div></>
+  return <><PanelTitle icon="🐣" title="农场伙伴" subtitle="购买小鸡后，可以每 30 秒自动巡查成熟作物" /><div className="pet-stage"><div className="pet-bubble">{busy && hasPet ? '正在搬家，马上就好！' : hasPet ? '咕咕！今天也一起努力吧。' : '给我一个温暖的新家吧？'}</div><div className={`pet-big ${busy && hasPet ? 'arriving' : ''}`}><img src="/assets/decor/farm-chicken.webp" alt="农场小鸡" /></div><h3>{hasPet === null ? '暂时没有查到伙伴状态' : hasPet ? '你的农场小鸡' : '还没有农场伙伴'}</h3>{busy && hasPet && <small className="pet-purchase-note">服务端正在确认购买，伙伴已经先来和你见面了</small>}{hasPet === true && <div className="pet-auto-row"><div><b>自动收获</b><small>{autoHarvestEnabled ? '每 30 秒巡查成熟作物' : '小鸡会留在原位休息'}</small></div><button className={`pet-switch ${autoHarvestEnabled ? 'on' : ''}`} role="switch" aria-checked={Boolean(autoHarvestEnabled)} disabled={busy || switching || autoHarvestEnabled === null} onClick={toggleAutoHarvest}><span /></button></div>}{hasPet === false && <div className="pet-purchase-card"><button className="primary pet-purchase-button" disabled={busy || balance < 200} onClick={buy}>{busy ? '正在迎接…' : '用 200 金币购买小鸡'}</button><small className="pet-balance-note">{balance < 200 ? `现有 ${balance} 金币 · 还差 ${200 - balance} 金币` : `购买后剩余 ${balance - 200} 金币`}</small></div>}{hasPet === null && <button className="secondary" disabled={busy} onClick={check}>{busy ? '查询中…' : '重新查询宠物状态'}</button>}</div></>
 }
 
 function DebugPanel() {
@@ -609,7 +846,7 @@ function DebugPanel() {
 
 function HttpRow({ log }: { log: HttpLog }) { return <div><time>{new Date(log.at).toLocaleTimeString()}</time><b>{log.method}</b><span>{log.path}</span><em className={log.status >= 400 ? 'bad' : ''}>{log.status || log.code} · {log.durationMs}ms</em></div> }
 function WsRow({ log }: { log: WsLog }) { return <div><time>{new Date(log.at).toLocaleTimeString()}</time><b>{log.direction === 'in' ? '←' : log.direction === 'out' ? '→' : '•'} {log.type}</b><span>{log.detail}</span></div> }
-function PanelTitle({ icon, title, subtitle }: { icon: string; title: string; subtitle: string }) { return <header className="panel-title"><span>{icon}</span><div><p className="eyebrow">FARM NOTE</p><h2>{title}</h2><p>{subtitle}</p></div></header> }
+function PanelTitle({ icon, title, subtitle }: { icon?: string; title: string; subtitle: string }) { return <header className={`panel-title ${icon ? '' : 'without-icon'}`}>{icon && <span>{icon}</span>}<div><p className="eyebrow">FARM NOTE</p><h2>{title}</h2><p>{subtitle}</p></div></header> }
 function DelayedLoading({ label }: { label: string }) {
   const visible = useDelayedFlag(true)
   return <div className={`empty-state loading-reserve ${visible ? 'visible' : ''}`} aria-live="polite">{visible && <><div className="spinner" />{label}</>}</div>
@@ -646,5 +883,27 @@ function actionFor(plot: PlotView | undefined, friend: boolean, selectedCrop = C
   }
   if (plot.status === 'EMPTY') return { method: 'farm.Plant', label: `播种${crop.shortName}` }
   return plot.growth_stage === 'MATURE' ? { method: 'farm.Harvest', label: `收获${crop.shortName}` } : { method: 'farm.Water', label: `给${crop.shortName}浇水` }
+}
+function toolActionFor(plot: PlotView | undefined, tool: FarmTool, friend: boolean, selectedCrop = CROPS[0]) {
+  if (tool === 'inspect') return null
+  const action = actionFor(plot, friend, selectedCrop)
+  if (!action) return null
+  if (tool === 'plant' && action.method === 'farm.Plant') return action
+  if (tool === 'water' && (action.method === 'farm.Water' || action.method === 'farm.HelpWater')) return action
+  if (tool === 'harvest' && (action.method === 'farm.Harvest' || action.method === 'farm.StealCrop')) return action
+  return null
+}
+function toolMismatchMessage(tool: FarmTool, plot: PlotView, friend: boolean) {
+  if (tool === 'plant') return plot.status === 'EMPTY' ? '请选择有库存的种子' : '这里已经有作物了，换一块空地吧'
+  if (tool === 'water') return plot.status === 'EMPTY' ? '空地不需要浇水' : plot.growth_stage === 'MATURE' ? '作物已经成熟，不用再浇水了' : '这块地现在不需要浇水'
+  if (tool === 'harvest') return plot.status === 'EMPTY' ? '这里还没有可以收获的作物' : friend ? '好友的作物成熟后才能采摘' : '作物成熟后才能收获'
+  return '点击土地可以查看详情'
+}
+function actionSound(method: string): FarmSound {
+  if (method === 'farm.Plant') return 'plant'
+  if (method === 'farm.Water' || method === 'farm.HelpWater') return 'water'
+  if (method === 'farm.Harvest') return 'harvest'
+  if (method === 'farm.StealCrop') return 'steal'
+  return 'select'
 }
 function phaseLabel(phase: string) { return ({ open: '在线', connecting: '连接中', backoff: '重连中', closed: '离线', idle: '未连接' } as Record<string, string>)[phase] ?? phase }

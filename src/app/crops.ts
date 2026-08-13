@@ -43,8 +43,22 @@ export function cropInventoryCount(items: InventoryItem[], itemType: 'SEED' | 'C
     .reduce((sum, item) => sum + item.quantity, 0)
 }
 
-export function cropStageArt(crop: CropDefinition, stage?: string) {
-  if (stage === 'MATURE') return crop.icon
-  if (stage === 'SEMI_MATURE') return crop.id === 'TOMATO' ? '🍃' : '🌿'
-  return '🌱'
+export const EMPTY_PLOT_ASSET = '/assets/crops/soil-empty.webp'
+
+export function cropStageAsset(crop: CropDefinition, stage?: string) {
+  const cropName = crop.id.toLowerCase()
+  const growthStage = stage === 'MATURE'
+    ? 'mature'
+    : stage === 'SEMI_MATURE'
+      ? 'growing'
+      : 'seedling'
+  return `/assets/crops/${cropName}-${growthStage}.webp`
+}
+
+export function cropMatureAsset(crop: CropDefinition) {
+  return cropStageAsset(crop, 'MATURE')
+}
+
+export function cropSeedAsset(crop: CropDefinition) {
+  return `/assets/seeds/${crop.id.toLowerCase()}-seeds.png`
 }

@@ -52,6 +52,18 @@ export class ApiClient {
     this.session = session
   }
 
+  async realtimeAccessToken(minValiditySeconds = 30, forceRefresh = false): Promise<string> {
+    const current = this.session
+    if (!current) throw new ApiError(401, 'AUTH_UNAUTHORIZED', '没有可用的登录会话')
+
+    const expiresAt = accessTokenExpiresAt(current.accessToken)
+    if (forceRefresh || (expiresAt !== null && expiresAt - Date.now() <= minValiditySeconds * 1000)) {
+      await this.refresh()
+    }
+    if (!this.session?.accessToken) throw new ApiError(401, 'AUTH_UNAUTHORIZED', '登录会话已经失效')
+    return this.session.accessToken
+  }
+
   private request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const method = (options.method ?? 'GET').toUpperCase()
     if (method !== 'GET') return this.executeRequest<T>(path, options)
@@ -227,12 +239,12 @@ export class ApiClient {
     return this.request<FriendsResponse>('/api/v1/social/friends').then(normalizeFriendsResponse)
   }
   createInvite() {
-    return this.request<{ invite_code: string }>('/api/v1/social/invite', { method: 'POST', body: '{}' })
+    return this.request<{ invite_code: string; invite_path?: string }>('/api/v1/social/invite', { method: 'POST', body: '{}' })
   }
   acceptInvite(inviteCode: string) {
     return this.request<{ ok: boolean }>('/api/v1/social/invite/accept', { method: 'POST', body: JSON.stringify({ invite_code: inviteCode }) })
   }
-  async acceptInviteAndWait(inviteCode: string, knownFriendIds: Iterable<string>, attempts = 7) {
+  async acceptInviteAndWait(inviteCode: string, knownFriendIds: Iterable<string>, attempts = 1) {
     const known = new Set(Array.from(knownFriendIds, String))
     await this.acceptInvite(inviteCode)
 
@@ -243,11 +255,12 @@ export class ApiClient {
         await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs))
       }
       latest = await this.friends()
-      if (latest.friends.some((friend) => !known.has(friend.user_id))) {
-        return { confirmed: true, friends: latest.friends }
+      const friend = latest.friends.find((candidate) => !known.has(candidate.user_id))
+      if (friend) {
+        return { confirmed: true, friends: latest.friends, friend }
       }
     }
-    return { confirmed: false, friends: latest.friends }
+    return { confirmed: false, friends: latest.friends, friend: undefined }
   }
   mails() {
     return this.request<{ mails: Mail[] }>('/api/v1/mail/list?limit=20')
@@ -279,4 +292,12 @@ export class ApiClient {
       body: JSON.stringify({ enabled }),
     })
   }
+}
+
+export function accessTokenExpiresAt(token: string): number | null {
+  const unsigned = token.slice(0, token.lastIndexOf('.'))
+  const separator = unsigned.lastIndexOf(':')
+  if (separator < 0) return null
+  const unixSeconds = Number(unsigned.slice(separator + 1))
+  return Number.isFinite(unixSeconds) && unixSeconds > 0 ? unixSeconds * 1000 : null
 }

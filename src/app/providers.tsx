@@ -8,6 +8,7 @@ import { appReducer, initialState, type AppState } from '../state/app-state'
 import { createUuidV7 } from '../shared/uuid-v7'
 import { detectPetHarvest, detectPetHarvestsFromSnapshot, type PetHarvestCue } from './pet-animation'
 import { cropDefinition, cropInventoryCount, type CropId } from './crops'
+import { farmAudio } from '../audio/farm-audio'
 
 const SESSION_KEY = 'farm.session.v1'
 const PROFILE_NAME_KEY = 'farm.profile-name.v1'
@@ -267,7 +268,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const socket = useMemo(() => new FarmSocket({
     onPhase: (phase) => {
-      if (phase !== 'open') acceptEventsRef.current = false
+      if (phase !== 'open') {
+        acceptEventsRef.current = false
+        pendingSubscriptionsRef.current = {}
+        const farmId = activeFarmRef.current?.farmId ?? null
+        dispatch({ type: 'farmSubscription', subscription: { farmId, phase: 'idle' } })
+        if (phase === 'closed' || phase === 'backoff') {
+          Object.values(ackTimers.current).forEach((timer) => window.clearTimeout(timer))
+          ackTimers.current = {}
+          pendingMethodsRef.current = {}
+          dispatch({ type: 'pendingClear' })
+        }
+      }
       dispatch({ type: 'phase', phase })
     },
     onAck: handleAck,
@@ -275,6 +287,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     onMailboxChanged: handleMailboxChanged,
     onLog: (log) => dispatch({ type: 'wsLog', log }),
     onOpen: () => syncOnOpenRef.current(),
+    resolveReconnectToken: (forceRefresh) => api.realtimeAccessToken(30, forceRefresh),
+    onReconnectBlocked: (error) => {
+      notify(error instanceof Error ? error.message : '登录会话已失效，请重新登录', 'error')
+    },
   }), [handleAck, handleEvent, handleMailboxChanged])
 
   const subscribeFarm = useCallback((farmId: string, version: string) => {
@@ -315,7 +331,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void loadSnapshot(activeFarmRef.current?.farmId ?? desiredFarmIdRef.current).finally(() => { resyncingRef.current = false })
   }
   syncOnOpenRef.current = () => {
-    void refreshMailboxSummary().catch(() => undefined)
     const current = activeFarmRef.current
     const desired = desiredFarmIdRef.current
     if (!socketOpenedRef.current && current && (!desired || current.farmId === desired)) {
@@ -324,7 +339,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return
     }
     socketOpenedRef.current = true
-    void loadSnapshot(desired)
+    void Promise.all([
+      loadSnapshot(desired),
+      refreshPlayerAssets(),
+      refreshMailboxSummary(),
+    ]).catch(() => undefined)
   }
 
   const retryFarmSubscription = useCallback(async () => {
@@ -425,6 +444,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const result = await (kind === 'buy' ? api.purchase(crop.id, amount) : api.sell(crop.id, amount))
       dispatch({ type: 'economyConfirm', coinBalance: result.coin_balance })
+      farmAudio.play(kind)
       schedulePlayerAssetsRefresh()
     } catch (error) {
       dispatch({
@@ -459,7 +479,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!session || cancelled) return
       await Promise.all([loadSnapshot(session.farmId), refreshPlayerAssets(), refreshMailboxSummary()])
       if (!cancelled && stateRef.current.session?.userId === session.userId) {
-        socket.connect(session.accessToken)
+        socket.connect(await api.realtimeAccessToken())
       }
     }
     void restore().catch(() => undefined)
