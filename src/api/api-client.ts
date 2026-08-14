@@ -271,6 +271,9 @@ export class ApiClient {
   readMail(mailId: string) {
     return this.request<{ ok: boolean }>('/api/v1/mail/read', { method: 'POST', body: JSON.stringify({ mail_id: Number(mailId) }) })
   }
+  readAllMails() {
+    return this.request<{ ok: boolean }>('/api/v1/mail/read-all', { method: 'POST' })
+  }
   claimAttachment(attachmentId: string) {
     return this.request<{ ok: boolean }>('/api/v1/mail/claim', { method: 'POST', body: JSON.stringify({ attachment_id: Number(attachmentId) }) })
   }
@@ -278,7 +281,12 @@ export class ApiClient {
     return this.request<{ tasks: Task[] }>('/api/v1/task/list')
   }
   claimTask(taskKey: string) {
-    return this.request<{ coin_reward: number }>('/api/v1/task/claim', { method: 'POST', body: JSON.stringify({ task_key: taskKey }) })
+    const claimId = createUuidV7()
+    return this.request<{ coin_reward: number }>('/api/v1/task/claim', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': claimId },
+      body: JSON.stringify({ task_key: taskKey, claim_id: claimId }),
+    })
   }
   petStatus() {
     return this.request<{ has_pet: boolean; auto_harvest_enabled: boolean }>('/api/v1/pet/status')

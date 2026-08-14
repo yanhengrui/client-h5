@@ -670,17 +670,21 @@ function MailPanel() {
     } finally { setMarkingReadId('') }
   }
   const markAllRead = async () => {
-    const unread = (mails ?? []).filter((mail) => mail.status === 'UNREAD')
-    if (unread.length === 0 || markingReadId || markingAllRead) return
+    const unreadCount = state.mailboxSummary?.unread_count ?? (mails ?? []).filter((mail) => mail.status === 'UNREAD').length
+    if (unreadCount === 0 || markingReadId || markingAllRead) return
     setMarkingAllRead(true)
     setMails((current) => current?.map((mail) => mail.status === 'UNREAD' ? { ...mail, status: 'READ' } : mail) ?? current)
     farmAudio.play('success')
-    const results = await Promise.allSettled(unread.map((mail) => api.readMail(String(mail.mail_id))))
-    const failed = results.filter((result) => result.status === 'rejected').length
-    await load()
-    if (failed === 0) notify(`已将 ${unread.length} 封来信全部标记为已读`, 'success')
-    else notify(`${unread.length - failed} 封已读，${failed} 封处理失败，请稍后重试`, 'error')
-    setMarkingAllRead(false)
+    try {
+      await api.readAllMails()
+      await load()
+      notify(`已将全部 ${unreadCount} 封未读来信标记为已读`, 'success')
+    } catch (e) {
+      await load()
+      showApiError(e, notify)
+    } finally {
+      setMarkingAllRead(false)
+    }
   }
   const open = (mail: Mail) => {
     setSelectedMailId(String(mail.mail_id))
@@ -692,7 +696,7 @@ function MailPanel() {
     <PanelTitle icon="✉️" title="乡间邮局" subtitle="邮差刚把信件送进了农场信箱" />
     {mails === null ? <DelayedLoading label="邮差正在分拣信件…" /> : mails.length === 0 ? <div className="mailbox-empty"><span>📭</span><h3>今天还没有新信</h3><p>等风铃响起时，再来看看吧。</p></div> : <div className="mailbox-layout">
       <aside className="mailbox-inbox">
-        <header><span>INBOX</span><b>收件匣</b><em>{mails.filter((mail) => mail.status === 'UNREAD').length} 封未读</em><button className="mail-read-all" type="button" disabled={markingAllRead || Boolean(markingReadId) || mails.every((mail) => mail.status !== 'UNREAD')} onClick={() => void markAllRead()}><i>{markingAllRead ? '···' : '✓'}</i>{markingAllRead ? '盖章中' : '一键已读'}</button></header>
+        <header><span>INBOX</span><b>收件匣</b><em>{state.mailboxSummary?.unread_count ?? mails.filter((mail) => mail.status === 'UNREAD').length} 封未读</em><button className="mail-read-all" type="button" disabled={markingAllRead || Boolean(markingReadId) || (state.mailboxSummary?.unread_count ?? mails.filter((mail) => mail.status === 'UNREAD').length) === 0} onClick={() => void markAllRead()}><i>{markingAllRead ? '···' : '✓'}</i>{markingAllRead ? '盖章中' : '一键已读'}</button></header>
         <div className="mailbox-slots">{mails.map((mail) => <button className={`mail-envelope ${mail.status === 'UNREAD' ? 'unread' : 'read'} ${String(mail.mail_id) === selectedMailId ? 'active' : ''}`} key={String(mail.mail_id)} onClick={() => open(mail)}>
           <span className="mail-seal" aria-label={mail.status === 'UNREAD' ? '未读' : '已读'}>{mail.status === 'UNREAD' ? '●' : '✓'}</span>
           <span className="mail-envelope-copy"><b>{mail.title}</b><small>{mail.content}</small></span>

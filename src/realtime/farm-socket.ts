@@ -24,6 +24,11 @@ type SocketCallbacks = {
 
 const delays = [250, 500, 1000, 2000, 5000]
 
+function websocketAuthProtocol(token: string) {
+  const encoded = btoa(token).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+  return `farm-auth.${encoded}`
+}
+
 export class FarmSocket {
   private socket: WebSocket | null = null
   private reconnectTimer?: number
@@ -53,7 +58,10 @@ export class FarmSocket {
     }
     this.callbacks.onPhase('connecting')
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
-    const socket = new WebSocket(`${scheme}://${location.host}/ws?token=${encodeURIComponent(token)}`)
+    // Browsers cannot set Authorization during the WebSocket handshake. Use a
+    // dedicated subprotocol so access tokens never enter URLs, browser history,
+    // reverse-proxy access logs or APM query capture.
+    const socket = new WebSocket(`${scheme}://${location.host}/ws`, [websocketAuthProtocol(token)])
     this.socket = socket
     socket.onopen = () => {
       if (this.socket !== socket) return

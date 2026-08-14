@@ -73,7 +73,11 @@ describe('FarmSocket reconnect recovery', () => {
       onmessage: ((event: { data: string }) => void) | null = null
       onerror: (() => void) | null = null
       onclose: ((event: { code: number; reason: string }) => void) | null = null
-      constructor(public url: string) { sockets.push(this) }
+      protocols: string[]
+      constructor(public url: string, protocols?: string | string[]) {
+        this.protocols = Array.isArray(protocols) ? protocols : protocols ? [protocols] : []
+        sockets.push(this)
+      }
       close() { this.readyState = 3 }
       send() {}
     }
@@ -98,7 +102,11 @@ describe('FarmSocket reconnect recovery', () => {
     await vi.advanceTimersByTimeAsync(250)
     expect(token).toHaveBeenCalledTimes(1)
     expect(sockets).toHaveLength(2)
-    expect(sockets[1].url).toContain(encodeURIComponent('42:2000000000.new-signature'))
+    expect(sockets[1].url).toBe('ws://farm.example/ws')
+    expect(sockets[1].protocols).toHaveLength(1)
+    expect(sockets[1].protocols[0]).not.toContain(':')
+    const encoded = sockets[1].protocols[0].replace('farm-auth.', '').replace(/-/g, '+').replace(/_/g, '/')
+    expect(atob(encoded)).toBe('42:2000000000.new-signature')
   })
 
   it('does not reconnect a connection kicked by a newer session', async () => {

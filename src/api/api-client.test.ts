@@ -44,6 +44,20 @@ describe('ApiClient mailbox summary', () => {
     await expect(client.mailSummary()).resolves.toEqual({ unread_count: 5, mailbox_version: 12 })
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/mail/summary', expect.any(Object))
   })
+
+  it('marks the complete server-side mailbox as read with one request', async () => {
+    vi.stubGlobal('window', { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout })
+    vi.stubGlobal('crypto', { getRandomValues: (values: Uint8Array) => values.fill(1) })
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('', () => undefined, () => undefined)
+
+    await expect(client.readAllMails()).resolves.toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/mail/read-all', expect.objectContaining({ method: 'POST' }))
+  })
 })
 
 describe('ApiClient password authentication', () => {
