@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 set "GATE_TARGET=%~1"
-if not defined GATE_TARGET set "GATE_TARGET=http://9.135.56.72"
+if not defined GATE_TARGET set "GATE_TARGET=http://127.0.0.1:8080"
 set "FRONTEND_PORT=%~2"
 if not defined FRONTEND_PORT set "FRONTEND_PORT=5173"
 

@@ -4,8 +4,8 @@ import { buildInvitePath, buildInviteUrl, normalizeInviteCode, postAuthPath, saf
 describe('invite flow', () => {
   it('builds a client-relative path and a complete URL', () => {
     expect(buildInvitePath('invite code/+')).toBe('/invite?code=invite+code%2F%2B')
-    expect(buildInviteUrl('fallback', '/invite?code=server-code', 'http://9.135.57.98:5173'))
-      .toBe('http://9.135.57.98:5173/invite?code=server-code')
+    expect(buildInviteUrl('fallback', '/invite?code=server-code', 'http://farm.example:5173'))
+      .toBe('http://farm.example:5173/invite?code=server-code')
   })
 
   it('accepts either a raw code or a copied invite link', () => {
